@@ -501,8 +501,16 @@ export default function MX3Dashboard() {
     </div>
   );
 
-  const s = data.snapshot;
-  const goal = data.company_goal;
+  const s = data.snapshot || {
+    snapshot_date: new Date().toISOString().split("T")[0],
+    revenue_wtd: 0, revenue_mtd: 0, revenue_qtd: 0, revenue_ytd: 0,
+    deals_closed_wtd: 0, deals_closed_mtd: 0, deals_closed_qtd: 0, deals_closed_ytd: 0,
+    avg_order_size: 0, sales_velocity_days: 0, daily_inbound_leads: 0, leads_7day_avg: 0,
+    new_customer_deals: 0, new_customer_revenue: 0, existing_customer_deals: 0, existing_customer_revenue: 0,
+    total_devices_sold_ytd: 0, total_strips_sold_ytd: 0, strips_per_device: 0,
+    revenue_mom_pct: 0, lead_volume_mom_pct: 0, new_customers_mom_pct: 0,
+  };
+  const goal = data.company_goal || { annual_target: 0, q1_target: 0 };
 
   const ytdPct = goal.annual_target > 0 ? (s.revenue_ytd / goal.annual_target) * 100 : 0;
   const expectedPace = (() => {
