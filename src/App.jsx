@@ -31,54 +31,73 @@ const VERT_ACCENT = {
   Healthcare:         "#8B5CF6",
 };
 
-// ─── MOCK DATA ──────────────────────────────────────────────────
-// Replace with Railway Postgres API calls
+// ─── API CONFIG ─────────────────────────────────────────────────
+// Set VITE_API_URL env var in Railway, or defaults to function-bun internal URL
+const API_URL = import.meta.env.VITE_API_URL || "";
 
-const MOCK_DATA = {
-  snapshot: {
-    snapshot_date: "2026-03-23",
-    revenue_wtd: 47200,
-    revenue_mtd: 189000,
-    revenue_qtd: 682000,
-    revenue_ytd: 1240000,
-    deals_closed_wtd: 8,
-    deals_closed_mtd: 81,
-    deals_closed_qtd: 212,
-    deals_closed_ytd: 212,
-    avg_order_size: 2340,
-    sales_velocity_days: 18.3,
-    daily_inbound_leads: 34,
-    leads_7day_avg: 31.4,
-    new_customer_deals: 24,
-    new_customer_revenue: 71800,
-    existing_customer_deals: 57,
-    existing_customer_revenue: 117200,
-    total_devices_sold_ytd: 164,
-    total_strips_sold_ytd: 771,
-    strips_per_device: 4.7,
-    revenue_mom_pct: 14.2,
-    lead_volume_mom_pct: 9.1,
-    new_customers_mom_pct: 22.3,
-  },
-  company_goal: { annual_target: 5200000, q1_target: 740000 },
-  verticals: [
-    { name: "Workplace Safety", revenue_qtd: 248000, revenue_ytd: 248000, goal_qtd: 280000, deals_closed_qtd: 72, new_customer_deals: 8, existing_customer_deals: 19, strips_per_device: 5.1 },
-    { name: "Athletics", revenue_qtd: 195000, revenue_ytd: 195000, goal_qtd: 240000, deals_closed_qtd: 56, new_customer_deals: 7, existing_customer_deals: 16, strips_per_device: 4.8 },
-    { name: "Military", revenue_qtd: 142000, revenue_ytd: 142000, goal_qtd: 190000, deals_closed_qtd: 48, new_customer_deals: 5, existing_customer_deals: 12, strips_per_device: 4.2 },
-    { name: "Healthcare", revenue_qtd: 97000, revenue_ytd: 97000, goal_qtd: 130000, deals_closed_qtd: 36, new_customer_deals: 4, existing_customer_deals: 10, strips_per_device: 3.9 },
-  ],
-  regions: [
-    { name: "Northeast", revenue_qtd: 215000, goal_qtd: 230000, deals: 58 },
-    { name: "Southeast", revenue_qtd: 198000, goal_qtd: 210000, deals: 52 },
-    { name: "Midwest", revenue_qtd: 152000, goal_qtd: 170000, deals: 44 },
-    { name: "West", revenue_qtd: 117000, goal_qtd: 130000, deals: 38 },
-  ],
-  history: Array.from({ length: 30 }, (_, i) => ({
-    date: new Date(2026, 2, i + 1).toISOString().split("T")[0],
-    revenue: Math.round(6300 * (i + 1) * (0.9 + Math.random() * 0.2)),
-    leads: Math.round(25 + Math.random() * 20),
-  })),
-};
+async function fetchAPI(path) {
+  const res = await fetch(`${API_URL}${path}`);
+  if (!res.ok) throw new Error(`API ${path}: ${res.status}`);
+  return res.json();
+}
+
+// Postgres NUMERIC columns come back as strings — coerce to numbers
+function numify(obj) {
+  if (!obj) return obj;
+  if (Array.isArray(obj)) return obj.map(numify);
+  const out = { ...obj };
+  for (const [k, v] of Object.entries(out)) {
+    if (typeof v === "string" && v !== "" && !isNaN(v) && !k.includes("date") && !k.includes("name") && !k.includes("hash")) {
+      out[k] = Number(v);
+    }
+  }
+  return out;
+}
+
+function useData() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  const load = async () => {
+    try {
+      setLoading(true);
+      const [snapshot, company_goal, verticals, regions, history] = await Promise.all([
+        fetchAPI("/api/snapshot"),
+        fetchAPI("/api/goals"),
+        fetchAPI("/api/verticals"),
+        fetchAPI("/api/regions"),
+        fetchAPI("/api/history"),
+      ]);
+      setData({
+        snapshot: numify(snapshot) || {},
+        company_goal: numify(company_goal) || { annual_target: 0, q1_target: 0 },
+        verticals: numify(verticals) || [],
+        regions: numify(regions) || [],
+        history: numify(history) || [],
+      });
+      setError(null);
+    } catch (e) {
+      console.error("Dashboard fetch error:", e);
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const saveGoals = async (goals) => {
+    await fetch(`${API_URL}/api/goals`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(goals),
+    });
+    load(); // refresh after save
+  };
+
+  return { data, loading, error, reload: load, saveGoals };
+}
 
 // ─── UTILITIES ──────────────────────────────────────────────────
 
@@ -451,9 +470,36 @@ function Sidebar({ view, setView }) {
 // ─── MAIN DASHBOARD ─────────────────────────────────────────────
 
 export default function MX3Dashboard() {
-  const [data] = useState(MOCK_DATA);
+  const { data, loading, error, reload, saveGoals } = useData();
   const [view, setView] = useState("overview");
   const [showGoals, setShowGoals] = useState(false);
+
+  if (loading) return (
+    <div style={{
+      fontFamily: "'Inter', -apple-system, sans-serif",
+      background: T.bg, color: T.textMute, minHeight: "100vh",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      flexDirection: "column", gap: 12,
+    }}>
+      <div style={{ fontSize: 14 }}>Loading dashboard...</div>
+    </div>
+  );
+
+  if (error || !data) return (
+    <div style={{
+      fontFamily: "'Inter', -apple-system, sans-serif",
+      background: T.bg, color: T.red, minHeight: "100vh",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      flexDirection: "column", gap: 12,
+    }}>
+      <div style={{ fontSize: 14 }}>Failed to load: {error}</div>
+      <button onClick={reload} style={{
+        padding: "8px 20px", fontSize: 13, borderRadius: 6,
+        border: `1px solid ${T.border}`, background: T.surface,
+        color: T.text, cursor: "pointer",
+      }}>Retry</button>
+    </div>
+  );
 
   const s = data.snapshot;
   const goal = data.company_goal;
@@ -474,7 +520,7 @@ export default function MX3Dashboard() {
       fontVariantNumeric: "tabular-nums",
     }}>
       {showGoals && (
-        <GoalsEditor goals={goal} onSave={(g) => console.log("Save:", g)} onClose={() => setShowGoals(false)} />
+        <GoalsEditor goals={goal} onSave={saveGoals} onClose={() => setShowGoals(false)} />
       )}
 
       <Sidebar view={view} setView={setView} />
