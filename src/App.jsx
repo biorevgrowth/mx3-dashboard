@@ -503,7 +503,7 @@ export default function MX3Dashboard() {
     </div>
   );
 
-  const s = data.snapshot || {
+  const EMPTY_SNAPSHOT = {
     snapshot_date: new Date().toISOString().split("T")[0],
     revenue_wtd: 0, revenue_mtd: 0, revenue_qtd: 0, revenue_ytd: 0,
     deals_closed_wtd: 0, deals_closed_mtd: 0, deals_closed_qtd: 0, deals_closed_ytd: 0,
@@ -512,7 +512,8 @@ export default function MX3Dashboard() {
     total_devices_sold_ytd: 0, total_strips_sold_ytd: 0, strips_per_device: 0,
     revenue_mom_pct: 0, lead_volume_mom_pct: 0, new_customers_mom_pct: 0,
   };
-  const goal = data.company_goal || { annual_target: 0, q1_target: 0 };
+  const s = { ...EMPTY_SNAPSHOT, ...data.snapshot };
+  const goal = { annual_target: 0, q1_target: 0, ...data.company_goal };
 
   const ytdPct = goal.annual_target > 0 ? (s.revenue_ytd / goal.annual_target) * 100 : 0;
   const expectedPace = (() => {
@@ -670,7 +671,7 @@ export default function MX3Dashboard() {
                   {[
                     ["Devices Sold", s.total_devices_sold_ytd, null],
                     ["Strip Packs", s.total_strips_sold_ytd, null],
-                    ["Strips/Device", s.strips_per_device.toFixed(1), T.green],
+                    ["Strips/Device", (s.strips_per_device||0).toFixed(1), T.green],
                   ].map(([label, val, color]) => (
                     <div key={label} style={{
                       background: T.surfaceAlt, borderRadius: 8, padding: "14px 12px", textAlign: "center",
