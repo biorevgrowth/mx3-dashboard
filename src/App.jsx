@@ -102,9 +102,10 @@ function useData() {
 // ─── UTILITIES ──────────────────────────────────────────────────
 
 const fmt = (n) => {
-  if (n >= 1000000) return `$${(n / 1000000).toFixed(2)}M`;
-  if (n >= 1000) return `$${(n / 1000).toFixed(1)}K`;
-  return `$${n.toFixed(0)}`;
+  const v = n || 0;
+  if (v >= 1000000) return `$${(v / 1000000).toFixed(2)}M`;
+  if (v >= 1000) return `$${(v / 1000).toFixed(1)}K`;
+  return `$${v.toFixed(0)}`;
 };
 
 const fmtNum = (n) => n.toLocaleString();
@@ -192,9 +193,10 @@ function Sparkline({ data, width = 80, height = 24, color = T.accent }) {
 
 // ─── TREND BADGE ────────────────────────────────────────────────
 
-function TrendBadge({ value, label }) {
-  const isUp = value > 0;
-  const isDown = value < 0;
+function TrendBadge({ value = 0, label }) {
+  const v = value ?? 0;
+  const isUp = v > 0;
+  const isDown = v < 0;
   const color = isUp ? T.green : isDown ? T.red : T.amber;
   const bg = isUp ? T.greenGlow : isDown ? T.redGlow : T.amberGlow;
   const arrow = isUp ? "\u2191" : isDown ? "\u2193" : "\u2192";
@@ -205,7 +207,7 @@ function TrendBadge({ value, label }) {
       fontSize: 11, fontWeight: 500, color,
       background: bg, padding: "2px 8px", borderRadius: 4,
     }}>
-      {arrow} {isUp ? "+" : ""}{value.toFixed(1)}%{label ? ` ${label}` : ""}
+      {arrow} {isUp ? "+" : ""}{v.toFixed(1)}%{label ? ` ${label}` : ""}
     </span>
   );
 }
@@ -639,13 +641,13 @@ export default function MX3Dashboard() {
                       <p style={{ fontSize: 11, fontWeight: 500, color: T.textMute, margin: 0, textTransform: "uppercase", letterSpacing: "0.04em" }}>{label}</p>
                       <p style={{
                         fontSize: 24, fontWeight: 700, margin: "8px 0 4px",
-                        color: val > 0 ? T.green : T.red,
+                        color: (val||0) > 0 ? T.green : T.red,
                       }}>
-                        {val > 0 ? "+" : ""}{val.toFixed(1)}%
+                        {(val||0) > 0 ? "+" : ""}{(val||0).toFixed(1)}%
                       </p>
                       <Sparkline
                         data={label === "Revenue" ? data.history.map(h => h.revenue) : data.history.map(h => h.leads)}
-                        color={val > 0 ? T.green : T.red} width={60} height={18}
+                        color={(val||0) > 0 ? T.green : T.red} width={60} height={18}
                       />
                     </div>
                   ))}
