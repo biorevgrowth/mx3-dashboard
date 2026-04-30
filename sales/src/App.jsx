@@ -56,7 +56,7 @@ function numify(obj) {
 // ─── UTILITIES ──────────────────────────────────────────────────
 
 const fmt = (n) => {
-  const v = n || 0;
+  const v = Number(n) || 0;
   if (v >= 1000000) return `$${(v / 1000000).toFixed(2)}M`;
   if (v >= 1000) return `$${(v / 1000).toFixed(1)}K`;
   return `$${v.toFixed(0)}`;
@@ -159,7 +159,7 @@ function Sparkline({ data, width = 80, height = 24, color = T.accent }) {
 // ─── TREND BADGE ────────────────────────────────────────────────
 
 function TrendBadge({ value = 0, label }) {
-  const v = value ?? 0;
+  const v = Number(value ?? 0) || 0;
   const isUp = v > 0;
   const isDown = v < 0;
   const color = isUp ? T.green : isDown ? T.red : T.amber;
@@ -245,8 +245,13 @@ function Section({ title, children }) {
 
 // ─── GOAL PROGRESS BAR ─────────────────────────────────────────
 
-function GoalProgressBar({ label, current, target, subtitle }) {
-  const pctValue = target > 0 ? Math.min((current / target) * 100, 100) : 0;
+function GoalProgressBar({ label, current, target, subtitle, isCurrency = true }) {
+  const cur = Number(current) || 0;
+  const tgt = Number(target) || 0;
+  const pctRaw = tgt > 0 ? (cur / tgt) * 100 : 0;
+  const pctValue = pctRaw;
+  const pctBarWidth = Math.min(pctRaw, 100);
+  const fmtNum = (n) => isCurrency ? fmt(n) : Math.round(Number(n) || 0).toLocaleString();
   const statusColor = pctValue >= 85 ? T.green : pctValue >= 70 ? T.amber : T.red;
 
   return (
@@ -258,7 +263,7 @@ function GoalProgressBar({ label, current, target, subtitle }) {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ fontSize: 12, color: T.textSec, fontVariantNumeric: "tabular-nums" }}>
-            {fmt(current)} / {fmt(target)}
+            {fmtNum(current)} / {fmtNum(target)}
           </span>
           <span style={{ fontSize: 11, fontWeight: 600, color: statusColor, fontVariantNumeric: "tabular-nums" }}>
             {pctValue.toFixed(0)}%
@@ -267,7 +272,7 @@ function GoalProgressBar({ label, current, target, subtitle }) {
       </div>
       <div style={{ height: 6, background: "rgba(255,255,255,0.06)", borderRadius: 3, overflow: "hidden" }}>
         <div style={{
-          width: `${pctValue}%`, height: "100%",
+          width: `${pctBarWidth}%`, height: "100%",
           background: `linear-gradient(90deg, ${statusColor}, ${statusColor}cc)`,
           borderRadius: 3, transition: "width 0.8s cubic-bezier(0.4,0,0.2,1)",
         }} />
@@ -381,16 +386,25 @@ function Sidebar({ view, setView, reps, currentRepId, onRepChange }) {
 // ─── GOALS EDITOR MODAL ─────────────────────────────────────────
 
 function GoalsEditor({ goals, onSave, onClose }) {
-  const [q1, setQ1] = useState(goals?.q1_revenue || 0);
-  const [q2, setQ2] = useState(goals?.q2_revenue || 0);
-  const [q3, setQ3] = useState(goals?.q3_revenue || 0);
-  const [q4, setQ4] = useState(goals?.q4_revenue || 0);
+  const [r1, setR1] = useState(Number(goals?.q1_revenue) || 0);
+  const [r2, setR2] = useState(Number(goals?.q2_revenue) || 0);
+  const [r3, setR3] = useState(Number(goals?.q3_revenue) || 0);
+  const [r4, setR4] = useState(Number(goals?.q4_revenue) || 0);
+  const [d1, setD1] = useState(Number(goals?.q1_deals) || 0);
+  const [d2, setD2] = useState(Number(goals?.q2_deals) || 0);
+  const [d3, setD3] = useState(Number(goals?.q3_deals) || 0);
+  const [d4, setD4] = useState(Number(goals?.q4_deals) || 0);
 
   const inputStyle = {
     width: "100%", padding: "8px 12px", fontSize: 14,
     background: T.surfaceAlt, border: `1px solid ${T.border}`,
     borderRadius: 6, color: T.text, outline: "none",
     fontVariantNumeric: "tabular-nums",
+  };
+  const sectionLabel = {
+    fontSize: 11, fontWeight: 600, color: T.textMute,
+    textTransform: "uppercase", letterSpacing: "0.06em",
+    marginBottom: 10,
   };
 
   return (
@@ -401,7 +415,7 @@ function GoalsEditor({ goals, onSave, onClose }) {
     }} onClick={onClose}>
       <div style={{
         background: T.surface, border: `1px solid ${T.border}`,
-        borderRadius: 12, padding: 28, maxWidth: 440, width: "100%",
+        borderRadius: 12, padding: 28, maxWidth: 460, width: "100%",
         boxShadow: "0 24px 48px rgba(0,0,0,0.4)",
       }} onClick={(e) => e.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
@@ -414,14 +428,27 @@ function GoalsEditor({ goals, onSave, onClose }) {
             display: "flex", alignItems: "center", justifyContent: "center",
           }}>x</button>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 20 }}>
-          {[["Q1", q1, setQ1], ["Q2", q2, setQ2], ["Q3", q3, setQ3], ["Q4", q4, setQ4]].map(([label, val, setter]) => (
-            <div key={label}>
+
+        <p style={sectionLabel}>Revenue ($)</p>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 18 }}>
+          {[["Q1", r1, setR1], ["Q2", r2, setR2], ["Q3", r3, setR3], ["Q4", r4, setR4]].map(([label, val, setter]) => (
+            <div key={"rev-" + label}>
               <label style={{ fontSize: 11, fontWeight: 500, color: T.textMute, display: "block", marginBottom: 6 }}>{label}</label>
               <input type="number" value={val} onChange={e => setter(Number(e.target.value))} style={inputStyle} />
             </div>
           ))}
         </div>
+
+        <p style={sectionLabel}>Deals (count)</p>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 22 }}>
+          {[["Q1", d1, setD1], ["Q2", d2, setD2], ["Q3", d3, setD3], ["Q4", d4, setD4]].map(([label, val, setter]) => (
+            <div key={"deals-" + label}>
+              <label style={{ fontSize: 11, fontWeight: 500, color: T.textMute, display: "block", marginBottom: 6 }}>{label}</label>
+              <input type="number" value={val} onChange={e => setter(Number(e.target.value))} style={inputStyle} />
+            </div>
+          ))}
+        </div>
+
         <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
           <button onClick={onClose} style={{
             padding: "8px 16px", fontSize: 13, fontWeight: 500, borderRadius: 6,
@@ -429,7 +456,10 @@ function GoalsEditor({ goals, onSave, onClose }) {
             color: T.textSec, cursor: "pointer",
           }}>Cancel</button>
           <button onClick={() => {
-            onSave({ q1_revenue: q1, q2_revenue: q2, q3_revenue: q3, q4_revenue: q4 });
+            onSave({
+              q1_revenue: r1, q2_revenue: r2, q3_revenue: r3, q4_revenue: r4,
+              q1_deals: d1, q2_deals: d2, q3_deals: d3, q4_deals: d4,
+            });
             onClose();
           }} style={{
             padding: "8px 20px", fontSize: 13, fontWeight: 600, borderRadius: 6,
@@ -678,8 +708,9 @@ export default function App() {
   const g = data.goals || {};
   const qNum = getQuarterNum();
   const qKey = getQuarterKey();
-  const qGoal = g[qKey] || 0;
-  const qPct = qGoal > 0 ? (s.revenue_qtd / qGoal) * 100 : 0;
+  const qGoal = Number(g[qKey]) || 0;
+  const revQtd = Number(s.revenue_qtd) || 0;
+  const qPct = qGoal > 0 ? (revQtd / qGoal) * 100 : 0;
   const onPace = qPct >= 70;
   const repName = repId === "kinga" ? "Kinga" : "Pete";
   const repSectors = reps.find(r => r.id === repId)?.sectors?.join(", ") || "";
@@ -820,7 +851,7 @@ export default function App() {
 
             <Section title="Quarterly Goal Progress">
               <GoalProgressBar label={`Q${qNum} Revenue`} current={s.revenue_qtd || 0} target={qGoal} />
-              <GoalProgressBar label={`Q${qNum} Deals`} current={s.deals_closed_mtd || 0} target={g[`q${qNum}_deals`] || 0} />
+              <GoalProgressBar label={`Q${qNum} Deals`} current={s.deals_closed_mtd || 0} target={g[`q${qNum}_deals`] || 0} isCurrency={false} />
             </Section>
           </>
         )}
@@ -894,9 +925,9 @@ export default function App() {
                       (data.distributors || []).forEach((d) => {
                         const sec = d.sector || "Other";
                         if (!sectors[sec]) sectors[sec] = { revenue_ytd: 0, revenue_qtd: 0, deals: 0 };
-                        sectors[sec].revenue_ytd += d.revenue_ytd || 0;
-                        sectors[sec].revenue_qtd += d.revenue_qtd || 0;
-                        sectors[sec].deals += d.deals_ytd || 0;
+                        sectors[sec].revenue_ytd += Number(d.revenue_ytd) || 0;
+                        sectors[sec].revenue_qtd += Number(d.revenue_qtd) || 0;
+                        sectors[sec].deals += Number(d.deals_ytd) || 0;
                       });
                       return Object.entries(sectors).map(([name, vals]) => (
                         <div key={name} style={{
