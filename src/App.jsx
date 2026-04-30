@@ -29,6 +29,8 @@ const VERT_ACCENT = {
   Athletics:          "#3B82F6",
   Military:           "#10B981",
   Healthcare:         "#8B5CF6",
+  Distributor:        "#EC4899",
+  Unassigned:         "#71717A",
 };
 
 // ─── API CONFIG ─────────────────────────────────────────────────
@@ -618,12 +620,11 @@ export default function MX3Dashboard() {
         {/* ─── OVERVIEW VIEW ───────────────────────────────── */}
         {view === "overview" && (
           <>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12, marginBottom: 14 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 14 }}>
               <MetricCard label="WTD Revenue" value={fmt(s.revenue_wtd)} trend={12} trendLabel="vs last wk" highlight />
               <MetricCard label="MTD Revenue" value={fmt(s.revenue_mtd)} trend={s.revenue_mom_pct} trendLabel="MoM" />
               <MetricCard label="QTD Revenue" value={fmt(s.revenue_qtd)} sparkData={data.history.map(h => h.revenue)} sparkColor={T.green} />
               <MetricCard label="Avg Order" value={fmt(s.avg_order_size)} trend={8} trendLabel="vs prior mo" />
-              <MetricCard label="Sales Velocity" value={`${s.sales_velocity_days}d`} trend={-3} trendLabel="days" />
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
@@ -710,21 +711,9 @@ export default function MX3Dashboard() {
         {/* ─── VERTICALS VIEW ──────────────────────────────── */}
         {view === "verticals" && (
           <>
-            <Section title="QTD Revenue by Vertical vs. Goal">
-              {data.verticals.map((v) => (
-                <GoalProgress
-                  key={v.name} label={v.name}
-                  current={v.revenue_qtd} target={v.goal_qtd}
-                  color={VERT_ACCENT[v.name]}
-                  subtitle={`${v.deals_closed_qtd} deals`}
-                />
-              ))}
-            </Section>
-
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 14 }}>
+            <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(data.verticals.length, 6)}, 1fr)`, gap: 12, marginBottom: 14 }}>
               {data.verticals.map((v) => {
-                const accent = VERT_ACCENT[v.name];
-                const pct = v.goal_qtd > 0 ? (v.revenue_qtd / v.goal_qtd * 100) : 0;
+                const accent = VERT_ACCENT[v.name] || "#71717A";
                 return (
                   <div key={v.name} style={{
                     background: T.surface, border: `1px solid ${T.border}`,
@@ -739,26 +728,29 @@ export default function MX3Dashboard() {
                     <p style={{
                       fontSize: 24, fontWeight: 700, margin: "10px 0 4px",
                       fontVariantNumeric: "tabular-nums",
-                    }}>{fmt(v.revenue_qtd)}</p>
+                    }}>{fmt(v.revenue_ytd)}</p>
                     <span style={{
-                      fontSize: 11, fontWeight: 600,
-                      color: pct >= 85 ? T.green : pct >= 70 ? T.amber : T.red,
-                    }}>{pct.toFixed(0)}% of goal</span>
+                      fontSize: 11, fontWeight: 600, color: T.textMute,
+                    }}>YTD Revenue</span>
                     <div style={{
                       display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8,
                       marginTop: 14, paddingTop: 12, borderTop: `1px solid ${T.border}`,
                     }}>
                       <div>
-                        <p style={{ fontSize: 10, color: T.textMute, margin: 0, textTransform: "uppercase" }}>New</p>
-                        <p style={{ fontSize: 16, fontWeight: 600, margin: "2px 0 0" }}>{v.new_customer_deals}</p>
+                        <p style={{ fontSize: 10, color: T.textMute, margin: 0, textTransform: "uppercase" }}>Rev WoW</p>
+                        <p style={{ fontSize: 16, fontWeight: 600, margin: "2px 0 0", color: (v.revenue_wow_chg || 0) >= 0 ? T.green : T.red }}>{(v.revenue_wow_chg || 0) > 0 ? "+" : ""}{fmt(v.revenue_wow_chg || 0)}</p>
                       </div>
                       <div>
-                        <p style={{ fontSize: 10, color: T.textMute, margin: 0, textTransform: "uppercase" }}>Existing</p>
-                        <p style={{ fontSize: 16, fontWeight: 600, margin: "2px 0 0" }}>{v.existing_customer_deals}</p>
+                        <p style={{ fontSize: 10, color: T.textMute, margin: 0, textTransform: "uppercase" }}>Rev MoM</p>
+                        <p style={{ fontSize: 16, fontWeight: 600, margin: "2px 0 0", color: (v.revenue_mom_chg || 0) >= 0 ? T.green : T.red }}>{(v.revenue_mom_chg || 0) > 0 ? "+" : ""}{fmt(v.revenue_mom_chg || 0)}</p>
                       </div>
-                      <div style={{ gridColumn: "1 / -1" }}>
-                        <p style={{ fontSize: 10, color: T.textMute, margin: 0, textTransform: "uppercase" }}>Strips/Device</p>
-                        <p style={{ fontSize: 16, fontWeight: 600, margin: "2px 0 0", color: T.green }}>{v.strips_per_device}</p>
+                      <div>
+                        <p style={{ fontSize: 10, color: T.textMute, margin: 0, textTransform: "uppercase" }}>Deals WoW</p>
+                        <p style={{ fontSize: 16, fontWeight: 600, margin: "2px 0 0", color: (v.deals_wow_chg || 0) >= 0 ? T.green : T.red }}>{(v.deals_wow_chg || 0) > 0 ? "+" : ""}{v.deals_wow_chg || 0}</p>
+                      </div>
+                      <div>
+                        <p style={{ fontSize: 10, color: T.textMute, margin: 0, textTransform: "uppercase" }}>Deals MoM</p>
+                        <p style={{ fontSize: 16, fontWeight: 600, margin: "2px 0 0", color: (v.deals_mom_chg || 0) >= 0 ? T.green : T.red }}>{(v.deals_mom_chg || 0) > 0 ? "+" : ""}{v.deals_mom_chg || 0}</p>
                       </div>
                     </div>
                   </div>
@@ -771,35 +763,38 @@ export default function MX3Dashboard() {
         {/* ─── REGIONS VIEW ────────────────────────────────── */}
         {view === "regions" && (
           <>
-            <Section title="QTD Revenue by Region vs. Goal">
-              {data.regions.map((r) => (
-                <GoalProgress
-                  key={r.name} label={r.name}
-                  current={r.revenue_qtd} target={r.goal_qtd}
-                  subtitle={`${r.deals} deals closed`}
-                />
-              ))}
-            </Section>
-
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 14 }}>
               {data.regions.map((r) => {
-                const pct = r.goal_qtd > 0 ? (r.revenue_qtd / r.goal_qtd * 100) : 0;
                 return (
                   <div key={r.name} style={{
                     background: T.surface, border: `1px solid ${T.border}`,
-                    borderRadius: T.radius, padding: "18px 16px", textAlign: "center",
+                    borderRadius: T.radius, padding: "18px 16px",
                   }}>
                     <p style={{ fontSize: 13, fontWeight: 600, color: T.text, margin: 0 }}>{r.name}</p>
                     <p style={{ fontSize: 24, fontWeight: 700, margin: "10px 0 4px", fontVariantNumeric: "tabular-nums" }}>
-                      {fmt(r.revenue_qtd)}
+                      {fmt(r.revenue_ytd)}
                     </p>
-                    <span style={{
-                      fontSize: 11, fontWeight: 600,
-                      color: pct >= 85 ? T.green : pct >= 70 ? T.amber : T.red,
-                    }}>{pct.toFixed(0)}% of goal</span>
-                    <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${T.border}` }}>
-                      <p style={{ fontSize: 10, color: T.textMute, margin: 0, textTransform: "uppercase" }}>Deals Closed</p>
-                      <p style={{ fontSize: 18, fontWeight: 600, margin: "2px 0 0" }}>{r.deals}</p>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: T.textMute }}>YTD Revenue</span>
+                    <div style={{
+                      display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8,
+                      marginTop: 14, paddingTop: 12, borderTop: `1px solid ${T.border}`,
+                    }}>
+                      <div>
+                        <p style={{ fontSize: 10, color: T.textMute, margin: 0, textTransform: "uppercase" }}>Rev WoW</p>
+                        <p style={{ fontSize: 16, fontWeight: 600, margin: "2px 0 0", color: (r.revenue_wow_chg || 0) >= 0 ? T.green : T.red }}>{(r.revenue_wow_chg || 0) > 0 ? "+" : ""}{fmt(r.revenue_wow_chg || 0)}</p>
+                      </div>
+                      <div>
+                        <p style={{ fontSize: 10, color: T.textMute, margin: 0, textTransform: "uppercase" }}>Rev MoM</p>
+                        <p style={{ fontSize: 16, fontWeight: 600, margin: "2px 0 0", color: (r.revenue_mom_chg || 0) >= 0 ? T.green : T.red }}>{(r.revenue_mom_chg || 0) > 0 ? "+" : ""}{fmt(r.revenue_mom_chg || 0)}</p>
+                      </div>
+                      <div>
+                        <p style={{ fontSize: 10, color: T.textMute, margin: 0, textTransform: "uppercase" }}>QTD</p>
+                        <p style={{ fontSize: 16, fontWeight: 600, margin: "2px 0 0" }}>{fmt(r.revenue_qtd)}</p>
+                      </div>
+                      <div>
+                        <p style={{ fontSize: 10, color: T.textMute, margin: 0, textTransform: "uppercase" }}>MTD</p>
+                        <p style={{ fontSize: 16, fontWeight: 600, margin: "2px 0 0" }}>{fmt(r.revenue_mtd || 0)}</p>
+                      </div>
                     </div>
                   </div>
                 );
