@@ -14,14 +14,18 @@ Production source for MX3 Fitness's executive and sales rep dashboards, the API 
 ├── sales/                # Sales Rep Dashboards for Kinga + Pete (React 19 + Vite 6)
 ├── api-for-railway/      # Executive Dashboard API (Bun + Hono + pg)
 │   └── index.tsx
+├── sales-api/            # Sales Rep API (Node + Express + pg)
+│   ├── index.js
+│   ├── lib/              # Today's Calls rules engine + rules
+│   ├── n8n/              # n8n helper nodes (sport levels, compute daily actions, etc.)
+│   ├── sql/              # SQL migrations 001-006 (rep tables, qbo invoices, customer rep map, etc.)
+│   └── test/             # Jest test suite
 ├── database/
-│   └── schema.sql        # Postgres schema (executive tables only — sales tables are in migrations not yet merged here)
+│   └── schema.sql        # Postgres schema (executive tables; sales tables are in sales-api/sql/)
 ├── n8n workflow backups/ # JSON exports of all 3 n8n workflows
 ├── mx3-integration-handoff.docx   # Companion doc for the HubSpot → QBO + ShipStation integration
 └── README.md             # this file
 ```
-
-The Sales Rep API (`mx3-sales-api`) is currently in a separate repo and **pending consolidation** into this one (likely as `/sales-api/`). Confirm with the maintainer before working on that surface.
 
 ---
 
@@ -112,7 +116,14 @@ railway up --service grateful-flow
 Production URL: `https://grateful-flow-production-5403.up.railway.app/`
 
 ### Sales API (`mx3-sales-api` service)
-Source is in a separate repo currently. Pending consolidation into this one. Ask the maintainer.
+**Manual deploy** today. Reconnection to GitHub auto-deploy is on the to-do list.
+
+```bash
+cd sales-api
+railway link --project 736f948b-c82d-4bfa-aeec-69dfcfc658a1
+railway up --service mx3-sales-api
+```
+Production URL: `https://mx3-sales-api-production.up.railway.app/`
 
 ---
 
@@ -120,7 +131,7 @@ Source is in a separate repo currently. Pending consolidation into this one. Ask
 
 Railway Postgres in the same project. Connection string is in each service's `DATABASE_URL` env var (Railway internal URL). For external connections (psql from your laptop, scripts), use `DATABASE_PUBLIC_URL` from the Postgres service variables tab.
 
-The schema file at `database/schema.sql` covers the executive dashboard tables (verticals, regions, goals, daily_snapshots, vertical_snapshots, region_snapshots, daily_briefings). Sales rep tables (`rep_snapshots`, `qbo_invoices`, `customer_rep_map`, etc.) are defined in migration files in the separate sales API repo and have been applied to production. Consolidation pending.
+The schema file at `database/schema.sql` covers the executive dashboard tables (verticals, regions, goals, daily_snapshots, vertical_snapshots, region_snapshots, daily_briefings). Sales rep tables (`rep_snapshots`, `qbo_invoices`, `customer_rep_map`, `rep_daily_actions`, etc.) are defined in `sales-api/sql/001-rep-tables.sql` through `006-rep-daily-actions.sql` and have been applied to production.
 
 ---
 
