@@ -1,0 +1,1574 @@
+{
+  "name": "Phase 1: Deal Confirmed → QBO Invoice + ShipStation Order",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Phase 1: Deal Confirmed → QBO + ShipStation\n\nTrigger: Sales rep moves deal to Closed Won,\nthen checks 'Order Confirmed' checkbox.\n\nFlow:\n1. Poll for deals where order_confirmed = true\n   AND invoice_number is empty\n2. Fetch associated quote + line items + contact\n3. Query QBO for last mxXXXXX → increment\n4. Create QBO invoice + email client\n5. Create ShipStation order (on_hold)\n6. Write invoice number back to deal\n7. Notify team via Slack + Email\n\n⚠️ No Operations Hub needed\n⚠️ No HubSpot invoices needed",
+        "height": 360,
+        "width": 420,
+        "color": 7
+      },
+      "id": "d1fb1692-99e6-420e-bb95-58c19cbe5e1f",
+      "name": "Sticky Note - Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        6864,
+        3936
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/deals/search",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "hubspotAppToken",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  filterGroups: [\n    {\n      filters: [\n        {\n          propertyName: 'order_confirmed',\n          operator: 'EQ',\n          value: 'true'\n        },\n        {\n          propertyName: 'dealstage',\n          operator: 'EQ',\n          value: '4546928'\n        },\n        {\n          propertyName: 'invoice_number',\n          operator: 'NOT_HAS_PROPERTY'\n        }\n      ]\n    }\n  ],\n  properties: [\n    'dealname',\n    'dealstage',\n    'order_confirmed',\n    'amount',\n    'closedate',\n    'hubspot_owner_id',\n    'hs_object_id'\n  ],\n  sorts: [\n    {\n      propertyName: 'closedate',\n      direction: 'DESCENDING'\n    }\n  ],\n  limit: 20\n}) }}",
+        "options": {}
+      },
+      "id": "35d38524-940d-4353-968e-f35e1644c614",
+      "name": "Search Confirmed Deals",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7280,
+        4336
+      ],
+      "credentials": {
+        "hubspotAppToken": {
+          "id": "qKhqn9XXJj7WpRHq",
+          "name": "HubSpot App Token account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// DEDUPLICATE: Skip deals we've already processed\n// Uses n8n static data (persisted in PostgreSQL on Railway)\n// ============================================================\n\nconst results = $input.first().json.results || [];\n\nif (results.length === 0) {\n  return []; // No confirmed deals — workflow stops\n}\n\nconst processed = $getWorkflowStaticData('global');\nif (!processed.dealIds) {\n  processed.dealIds = [];\n}\n\nconst newDeals = [];\n\nfor (const deal of results) {\n  if (!processed.dealIds.includes(deal.id)) {\n    newDeals.push({ json: { dealId: deal.id, dealName: deal.properties.dealname } });\n    processed.dealIds.push(deal.id);\n  }\n}\n\n// Cap at 500 IDs to prevent unbounded growth\nif (processed.dealIds.length > 500) {\n  processed.dealIds = processed.dealIds.slice(-500);\n}\n\nreturn newDeals;"
+      },
+      "id": "55e16d19-f970-4520-98cf-cdc21b6630a0",
+      "name": "Deduplicate Deals",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7536,
+        4336
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Fetch All Data from HubSpot\nDeal → Quote (via association)\nQuote → Line Items\nDeal → Contact (for addresses/email)\n\nQuote carries the line items.\nContact carries the addresses.",
+        "width": 350,
+        "color": 4
+      },
+      "id": "b3e7bf9e-c287-40a5-900b-a3a5ab4e72d8",
+      "name": "Sticky Note - Data Fetch",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        7760,
+        4096
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.hubapi.com/crm/v3/objects/deals/{{ $json.dealId }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "hubspotAppToken",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "properties",
+              "value": "dealname,dealstage,amount,closedate,hubspot_owner_id,pipeline"
+            },
+            {
+              "name": "associations",
+              "value": "contacts,companies,quotes"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b5bcb69c-f976-46d2-bfae-3e72b689dafd",
+      "name": "Get Deal Details",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7808,
+        4336
+      ],
+      "credentials": {
+        "hubspotAppToken": {
+          "id": "qKhqn9XXJj7WpRHq",
+          "name": "HubSpot App Token account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "=https://api.hubapi.com/crm/v3/objects/quotes/{{ $json.associations.quotes.results[0].id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "hubspotAppToken",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "properties",
+              "value": "hs_title,hs_expiration_date,hs_quote_amount,hs_quote_number,hs_status,hs_currency,hs_terms,hs_sign_status,hs_esign_date"
+            },
+            {
+              "name": "associations",
+              "value": "line_items,contacts"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b44c9d77-04c5-4848-9428-52a14d95218e",
+      "name": "Get Quote",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        8112,
+        4176
+      ],
+      "credentials": {
+        "hubspotAppToken": {
+          "id": "qKhqn9XXJj7WpRHq",
+          "name": "HubSpot App Token account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build the batch read payload from quote's line item associations\nconst quote = $input.first().json;\nconst lineItemAssociations = quote.associations?.line_items?.results || quote.associations?.['line items']?.results || [];\n\nif (lineItemAssociations.length === 0) {\n  throw new Error('No line items found on quote ' + (quote.id || 'unknown'));\n}\n\nconst payload = {\n  inputs: lineItemAssociations.map(l => ({ id: l.id })),\n  properties: ['name', 'quantity', 'price', 'hs_sku', 'description', 'amount', 'hs_line_item_currency_code', 'discount', 'tax']\n};\n\nreturn { json: { batchPayload: payload } };"
+      },
+      "id": "19978265-ceec-4fc8-a811-5e7f396fd9bc",
+      "name": "Build Line Items Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8336,
+        4224
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/line_items/batch/read",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "hubspotAppToken",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.batchPayload) }}",
+        "options": {}
+      },
+      "id": "e617ea0f-87c5-4699-8b0c-80bacd3767d7",
+      "name": "Get Line Items",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        8576,
+        4352
+      ],
+      "credentials": {
+        "hubspotAppToken": {
+          "id": "qKhqn9XXJj7WpRHq",
+          "name": "HubSpot App Token account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "=https://api.hubapi.com/crm/v3/objects/contacts/{{ $json.associations.contacts.results[0].id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "hubspotAppToken",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "properties",
+              "value": "firstname,lastname,email,phone,company,address,city,state,zip,country,hs_shipping_address,hs_shipping_city,hs_shipping_state,hs_shipping_zip,hs_shipping_country"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "9db257c6-0d81-44ce-ad72-fe3ec9f7b980",
+      "name": "Get Contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        8288,
+        4592
+      ],
+      "credentials": {
+        "hubspotAppToken": {
+          "id": "qKhqn9XXJj7WpRHq",
+          "name": "HubSpot App Token account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// NORMALIZE: Combine deal + quote + line items + contact\n// into a single clean object for downstream branches\n// ============================================================\n\nconst deal = $('Get Deal Details').first().json;\nconst quote = $('Get Quote').first().json;\nconst lineItemsRaw = $('Get Line Items').first().json;\nconst contact = $('Get Contact').first().json;\n\nconst lineItems = (lineItemsRaw.results || []).map(li => ({\n  name: li.properties.name || 'Item',\n  description: li.properties.description || '',\n  sku: li.properties.hs_sku || '',\n  quantity: parseFloat(li.properties.quantity) || 1,\n  unitPrice: parseFloat(li.properties.price) || 0,\n  amount: parseFloat(li.properties.amount) || 0,\n  discount: parseFloat(li.properties.discount) || 0,\n  tax: parseFloat(li.properties.tax) || 0\n}));\n\nconst cp = contact.properties || {};\nconst hasShippingAddress = !!(cp.hs_shipping_address && cp.hs_shipping_address.trim());\n\nconst billingAddress = {\n  name: `${cp.firstname || ''} ${cp.lastname || ''}`.trim(),\n  company: cp.company || '',\n  street1: cp.address || '',\n  city: cp.city || '',\n  state: cp.state || '',\n  postalCode: cp.zip || '',\n  country: cp.country || 'US',\n  phone: cp.phone || ''\n};\n\nconst shippingAddress = hasShippingAddress ? {\n  name: billingAddress.name,\n  company: billingAddress.company,\n  street1: cp.hs_shipping_address || '',\n  city: cp.hs_shipping_city || '',\n  state: cp.hs_shipping_state || '',\n  postalCode: cp.hs_shipping_zip || '',\n  country: cp.hs_shipping_country || 'US',\n  phone: billingAddress.phone\n} : { ...billingAddress };\n\nconst subtotal = lineItems.reduce((sum, li) => sum + li.amount, 0);\n\nreturn {\n  json: {\n    // IDs for cross-referencing\n    dealId: deal.id,\n    dealName: deal.properties.dealname,\n    quoteId: quote.id,\n    quoteNumber: quote.properties.hs_quote_number || '',\n    quoteTitle: quote.properties.hs_title || '',\n    signStatus: quote.properties.hs_sign_status || '',\n    esignDate: quote.properties.hs_esign_date || '',\n    \n    // Financial\n    currency: quote.properties.hs_currency || 'USD',\n    quoteAmount: parseFloat(quote.properties.hs_quote_amount) || 0,\n    subtotal: subtotal,\n    closeDate: deal.properties.closedate,\n    \n    // Customer\n    customerEmail: cp.email || '',\n    customerName: billingAddress.name,\n    customerPhone: cp.phone || '',\n    contactId: contact.id,\n    billingAddress: billingAddress,\n    shippingAddress: shippingAddress,\n    hasShippingAddress: hasShippingAddress,\n    \n    // Line items\n    lineItems: lineItems,\n    itemCount: lineItems.length,\n    itemSummary: lineItems.map(li => `${li.quantity}x ${li.name}`).join(', '),\n    \n    // ShipStation dedup key (deterministic)\n    shipStationOrderKey: `hubspot-deal-${deal.id}`\n  }\n};"
+      },
+      "id": "0120a0e9-23c5-4db0-aac2-3df03733df9a",
+      "name": "Normalize Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8992,
+        4496
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Branch A: QuickBooks Online\n1. Get last mx number from QBO\n2. Search/create customer\n3. Map SKUs to QBO ItemRef IDs\n4. Create invoice with next mx number\n5. Email invoice to client",
+        "width": 380,
+        "color": 3
+      },
+      "id": "ff09f561-1cd6-4722-afd2-01759ca792f8",
+      "name": "Sticky Note - QBO",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        9168,
+        3952
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// PARSE LAST MX NUMBER AND INCREMENT\n// ============================================================\n\nconst lastInvoice = $input.first().json;\nconst invoices = lastInvoice.QueryResponse?.Invoice || [];\n\nlet nextNumber = 10001; // Starting number if no mx invoices exist\n\nif (invoices.length > 0) {\n  const lastDocNumber = invoices[0].DocNumber || '';\n  const match = lastDocNumber.match(/^mx(\\d+)$/i);\n  if (match) {\n    nextNumber = parseInt(match[1], 10) + 1;\n  }\n}\n\n// Format: mx + zero-padded to at least 5 digits\nconst mxNumber = 'mx' + String(nextNumber).padStart(5, '0');\n\n// Pass through all data from Normalize Data\nconst normalizeData = $('Normalize Data').first().json;\n\nreturn {\n  json: {\n    ...normalizeData,\n    mxNumber: mxNumber,\n    mxRawNumber: nextNumber\n  }\n};"
+      },
+      "id": "37e53a1a-d4e8-4f1b-b925-d514bb23f4c2",
+      "name": "Generate Next mx Number",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9392,
+        4144
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://quickbooks.api.intuit.com/v3/company/193514766337794/query",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "quickBooksOAuth2Api",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "query",
+              "value": "=SELECT * FROM Customer WHERE PrimaryEmailAddr = '{{ $json.customerEmail }}' MAXRESULTS 1"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "86fe23b1-6faa-481b-a6b5-434983a2eca0",
+      "name": "QBO: Search Customer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        9712,
+        3664
+      ],
+      "credentials": {
+        "quickBooksOAuth2Api": {
+          "id": "lhymeLb2sIkypk6I",
+          "name": "QuickBooks Online account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "customer-exists",
+              "leftValue": "={{ $json.QueryResponse?.Customer?.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "da2fa2a8-7dd0-4d70-b3c3-af5560eb9a13",
+      "name": "IF: Customer Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        9984,
+        3728
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const customer = $json.QueryResponse.Customer[0];\nreturn {\n  json: {\n    ...$('Generate Next mx Number').first().json,\n    qboCustomerId: customer.Id,\n    qboCustomerIsNew: false\n  }\n};"
+      },
+      "id": "8edb674b-ffde-4caa-9e72-2045780c705b",
+      "name": "Use Existing Customer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10304,
+        3648
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://quickbooks.api.intuit.com/v3/company/193514766337794/customer",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "quickBooksOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  DisplayName: $('Generate Next mx Number').first().json.customerName + ' - ' + Date.now(),\n  PrimaryEmailAddr: { Address: $('Generate Next mx Number').first().json.customerEmail },\n  PrimaryPhone: { FreeFormNumber: $('Generate Next mx Number').first().json.customerPhone },\n  BillAddr: {\n    Line1: $('Generate Next mx Number').first().json.billingAddress.street1,\n    City: $('Generate Next mx Number').first().json.billingAddress.city,\n    CountrySubDivisionCode: $('Generate Next mx Number').first().json.billingAddress.state,\n    PostalCode: $('Generate Next mx Number').first().json.billingAddress.postalCode,\n    Country: $('Generate Next mx Number').first().json.billingAddress.country\n  },\n  ShipAddr: {\n    Line1: $('Generate Next mx Number').first().json.shippingAddress.street1,\n    City: $('Generate Next mx Number').first().json.shippingAddress.city,\n    CountrySubDivisionCode: $('Generate Next mx Number').first().json.shippingAddress.state,\n    PostalCode: $('Generate Next mx Number').first().json.shippingAddress.postalCode,\n    Country: $('Generate Next mx Number').first().json.shippingAddress.country\n  }\n}) }}",
+        "options": {}
+      },
+      "id": "2362a2c5-bc24-4781-8e29-6e242c8ccf8e",
+      "name": "QBO: Create Customer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        10304,
+        3808
+      ],
+      "credentials": {
+        "quickBooksOAuth2Api": {
+          "id": "lhymeLb2sIkypk6I",
+          "name": "QuickBooks Online account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const customer = $json.Customer;\nreturn {\n  json: {\n    ...$('Generate Next mx Number').first().json,\n    qboCustomerId: customer.Id,\n    qboCustomerIsNew: true\n  }\n};"
+      },
+      "id": "2ef6cd71-f8a4-4bc8-9e24-3df5548129f8",
+      "name": "Use New Customer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10544,
+        3904
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://quickbooks.api.intuit.com/v3/company/193514766337794/query",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "quickBooksOAuth2Api",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "query",
+              "value": "SELECT Id, Name, Sku FROM Item WHERE Active = true MAXRESULTS 1000"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c8f1e680-6756-471c-bc24-9c3e4ea41d3b",
+      "name": "QBO: Get All Items",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        11424,
+        4080
+      ],
+      "credentials": {
+        "quickBooksOAuth2Api": {
+          "id": "lhymeLb2sIkypk6I",
+          "name": "QuickBooks Online account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// BUILD QBO INVOICE WITH MX NUMBER\n// Avalara handles sales tax — no TaxCodeRef or TxnTaxDetail\n// ============================================================\n\nconst qboItemsResponse = $input.first().json;\nconst allQboItems = qboItemsResponse.QueryResponse?.Item || [];\n\n// Get customer data from whichever branch executed\nlet prevData;\ntry {\n  prevData = $('Use New Customer').first().json;\n} catch (e) {\n  prevData = $('Use Existing Customer').first().json;\n}\n\n// Build SKU → QBO Item ID lookup\nconst skuToItemId = {};\nallQboItems.forEach(item => {\n  if (item.Sku) skuToItemId[item.Sku.trim().toUpperCase()] = item.Id;\n  if (item.Name) skuToItemId[item.Name.trim().toUpperCase()];\n});\n\nconst invoiceLines = prevData.lineItems.map(li => {\n  const skuKey = (li.sku || li.name || '').trim().toUpperCase();\n  const qboItemId = skuToItemId[skuKey];\n  \n  if (!qboItemId) {\n    console.log(`WARNING: No QBO item found for SKU \"${li.sku}\" / Name \"${li.name}\"`);\n  }\n  \n  const line = {\n    DetailType: 'SalesItemLineDetail',\n    Amount: li.quantity * li.unitPrice,\n    Description: li.description || li.name,\n    SalesItemLineDetail: {\n      Qty: li.quantity,\n      UnitPrice: li.unitPrice\n    }\n  };\n  \n  if (qboItemId) {\n    line.SalesItemLineDetail.ItemRef = { value: qboItemId.toString() };\n  }\n  \n  return line;\n});\n\nconst invoicePayload = {\n  CustomerRef: { value: prevData.qboCustomerId.toString() },\n  DocNumber: prevData.mxNumber,\n  TxnDate: new Date().toISOString().split('T')[0],\n  BillEmail: { Address: prevData.customerEmail },\n  ShipAddr: {\n    Line1: prevData.shippingAddress.street1,\n    City: prevData.shippingAddress.city,\n    CountrySubDivisionCode: prevData.shippingAddress.state,\n    PostalCode: prevData.shippingAddress.postalCode,\n    Country: prevData.shippingAddress.country\n  },\n  Line: invoiceLines,\n  PrivateNote: `HubSpot Deal: ${prevData.dealName} | Quote: ${prevData.quoteNumber} | Deal ID: ${prevData.dealId}`\n};\n\nreturn {\n  json: {\n    ...prevData,\n    invoicePayload: invoicePayload\n  }\n};"
+      },
+      "id": "e7899c85-7131-491f-b2d6-7f7748d3e381",
+      "name": "Build Invoice Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        11168,
+        3744
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://quickbooks.api.intuit.com/v3/company/193514766337794/invoice",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "quickBooksOAuth2Api",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.invoicePayload) }}",
+        "options": {}
+      },
+      "id": "8a7f6679-77b9-4254-a2e1-14cd949d1146",
+      "name": "QBO: Create Invoice",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        11888,
+        4048
+      ],
+      "credentials": {
+        "quickBooksOAuth2Api": {
+          "id": "lhymeLb2sIkypk6I",
+          "name": "QuickBooks Online account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## Branch B: ShipStation\nCreate order with mx number.\non_hold + Approval Pending tag.",
+        "height": 100,
+        "width": 320,
+        "color": 4
+      },
+      "id": "25c02da4-a5f9-4fc2-9a79-1c19fe4f80f9",
+      "name": "Sticky Note - ShipStation",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        9648,
+        4432
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://ssapi.shipstation.com/orders/createorder",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  orderNumber: $json.mxNumber || 'PENDING',\n  orderKey: $json.shipStationOrderKey,\n  orderDate: ($json.closeDate || new Date().toISOString()).split('T')[0] + 'T00:00:00.0000000',\n  orderStatus: 'on_hold',\n  customerEmail: $json.customerEmail,\n  customerUsername: $json.customerEmail,\n  billTo: {\n    name: $json.billingAddress.name,\n    company: $json.billingAddress.company,\n    street1: $json.billingAddress.street1,\n    city: $json.billingAddress.city,\n    state: $json.billingAddress.state,\n    postalCode: $json.billingAddress.postalCode,\n    country: $json.billingAddress.country,\n    phone: $json.billingAddress.phone\n  },\n  shipTo: {\n    name: $json.shippingAddress.name,\n    company: $json.shippingAddress.company,\n    street1: $json.shippingAddress.street1,\n    city: $json.shippingAddress.city,\n    state: $json.shippingAddress.state,\n    postalCode: $json.shippingAddress.postalCode,\n    country: $json.shippingAddress.country,\n    phone: $json.shippingAddress.phone\n  },\n  items: $json.lineItems.map(li => ({\n    name: li.name,\n    quantity: li.quantity,\n    unitPrice: li.unitPrice,\n    sku: li.sku\n  })),\n  amountPaid: 0,\n  shippingAmount: 0,\n  internalNotes: 'Deal: ' + $json.dealName + ' | Quote: ' + $json.quoteNumber + ' | APPROVAL REQUIRED',\n  source: 'HubSpot',\n  advancedOptions: {\n    customField1: 'HubSpot Deal: ' + $json.dealId,\n    customField2: 'Order: ' + ($json.mxNumber || 'PENDING'),\n    customField3: 'Quote: ' + $json.quoteNumber,\n    source: 'HubSpot'\n  }\n}) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "5f1c1d14-d4e9-4579-9c9e-7ce648a96c70",
+      "name": "SS: Create Order",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        9536,
+        4736
+      ],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "tdf4kfkJWB0OdoLE",
+          "name": "ShipStation API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://ssapi.shipstation.com/orders/addtag",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  orderId: $json.orderId,\n  tagId: 106725\n}) }}",
+        "options": {}
+      },
+      "id": "a5d7cecc-1587-4e28-857d-76ff72043251",
+      "name": "SS: Add Approval Tag",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        9744,
+        4736
+      ],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "tdf4kfkJWB0OdoLE",
+          "name": "ShipStation API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## Post-Processing\nWrite the invoice number back to the\nHubSpot deal for reference.\n\nThe invoice_number field also\nprevents the deal from being\npicked up again on the next poll.",
+        "height": 140,
+        "width": 320,
+        "color": 5
+      },
+      "id": "92db0d2c-7c13-4aac-9a97-897cef6ac4b1",
+      "name": "Sticky Note - Post",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        9328,
+        4928
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Notifications\nSlack",
+        "height": 80,
+        "width": 250,
+        "color": 6
+      },
+      "id": "2d21b6e7-8e97-44e3-8d1c-bcd2573c574a",
+      "name": "Sticky Note - Notify",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        9680,
+        4576
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0AHGKURX4H",
+          "mode": "id"
+        },
+        "text": "=*Order:* mx00001-TEST\n*Deal:* {{ $json.dealName || 'Test Inc - New Deal' }}\n*Customer:* {{ $json.customerName || 'Test Customer' }}",
+        "otherOptions": {}
+      },
+      "id": "91d5eeec-92d4-4232-8fb5-88b4d9f5cfca",
+      "name": "Slack: Order Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        10032,
+        4736
+      ],
+      "webhookId": "00325db3-3777-4f95-990a-ea9f76ff3840",
+      "credentials": {
+        "slackApi": {
+          "id": "Nw7ZlPoj2PLRlLjk",
+          "name": "Slack account Order alert"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        7008,
+        4544
+      ],
+      "id": "c8736c24-2f3d-498b-9c8b-c94fc7ee816b",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "filters": {}
+      },
+      "type": "n8n-nodes-base.quickbooks",
+      "typeVersion": 1,
+      "position": [
+        6384,
+        3184
+      ],
+      "id": "92e3599c-2f71-42f3-9274-eb3b1a4bf4d6",
+      "name": "Get many customers",
+      "credentials": {
+        "quickBooksOAuth2Api": {
+          "id": "lhymeLb2sIkypk6I",
+          "name": "QuickBooks Online account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "filters": {}
+      },
+      "type": "n8n-nodes-base.quickbooks",
+      "typeVersion": 1,
+      "position": [
+        6592,
+        3184
+      ],
+      "id": "0494f04d-6e6d-4c96-8436-d18323a8ec68",
+      "name": "Get many customers1",
+      "credentials": {
+        "quickBooksOAuth2Api": {
+          "id": "lhymeLb2sIkypk6I",
+          "name": "QuickBooks Online account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        8800,
+        4544
+      ],
+      "id": "dbc84b41-3877-4cd7-a25f-e12528998c87",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "url": "https://quickbooks.api.intuit.com/v3/company/193514766337794/query",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "quickBooksOAuth2Api",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "query",
+              "value": "SELECT DocNumber FROM Invoice ORDERBY MetaData.CreateTime DESC MAXRESULTS 1"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        9152,
+        4144
+      ],
+      "id": "28773acb-52eb-4baf-aee8-8d43b9576237",
+      "name": "QBO: Get Last Invoice Number",
+      "credentials": {
+        "quickBooksOAuth2Api": {
+          "id": "lhymeLb2sIkypk6I",
+          "name": "QuickBooks Online account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://api.hubapi.com/crm/v3/objects/deals/{{ $('Generate Next mx Number').item.json.dealId }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "hubspotAppToken",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "properties.invoice_number",
+              "value": "={{ $('Generate Next mx Number').item.json.mxNumber }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        9328,
+        5120
+      ],
+      "id": "4d476132-2711-415c-a42a-8485a814773e",
+      "name": "HS: Write Invoice Number",
+      "credentials": {
+        "hubspotAppToken": {
+          "id": "qKhqn9XXJj7WpRHq",
+          "name": "HubSpot App Token account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        8400,
+        5088
+      ],
+      "id": "c7e936a1-b63f-4483-8354-9f3adbd9409c",
+      "name": "Error Trigger"
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0AHGKURX4H",
+          "mode": "id"
+        },
+        "text": "=:warning: Phase 1 Workflow Error\n\nFailed Node: {{ $json.execution.lastNodeExecuted }}\nError: {{ $json.execution.error.message }}\nExecution: {{ $json.execution.url }}\nMode: {{ $json.execution.mode }}",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        8608,
+        5088
+      ],
+      "id": "d16d16ce-9d72-483c-9310-9681e8f587e6",
+      "name": "Send a message",
+      "webhookId": "51144f94-d4d0-4ed5-96d7-96bdee2195b5",
+      "credentials": {
+        "slackApi": {
+          "id": "Nw7ZlPoj2PLRlLjk",
+          "name": "Slack account Order alert"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "https://quickbooks.api.intuit.com/v3/company/193514766337794/query",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "quickBooksOAuth2Api",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "query",
+              "value": "=SELECT * FROM Customer WHERE CompanyName = '{{ $json.billingAddress.company }}' MAXRESULTS 1"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        9680,
+        4160
+      ],
+      "id": "5cf64556-cacf-416a-85bf-8e1f0c04f6b8",
+      "name": "QBO: Search Parent Customer",
+      "credentials": {
+        "quickBooksOAuth2Api": {
+          "id": "lhymeLb2sIkypk6I",
+          "name": "QuickBooks Online account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://quickbooks.api.intuit.com/v3/company/193514766337794/customer",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "quickBooksOAuth2Api",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "accept",
+              "value": "application/json"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "=={{ JSON.stringify({ DisplayName: $('Generate Next mx Number').item.json.billingAddress.company, CompanyName: $('Generate Next mx Number').item.json.billingAddress.company, PrimaryPhone: { FreeFormNumber: $('Generate Next mx Number').item.json.customerPhone }, BillAddr: { Line1: $('Generate Next mx Number').item.json.billingAddress.street1, City: $('Generate Next mx Number').item.json.billingAddress.city, CountrySubDivisionCode: $('Generate Next mx Number').item.json.billingAddress.state, PostalCode: $('Generate Next mx Number').item.json.billingAddress.postalCode, Country: $('Generate Next mx Number').item.json.billingAddress.country } }) }}\n",
+        "bodyParameters": {
+          "parameters": [
+            {}
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        10144,
+        4352
+      ],
+      "id": "771887c2-0eee-4755-8aea-8505d72e931a",
+      "name": "QBO: Create Parent Customer",
+      "credentials": {
+        "quickBooksOAuth2Api": {
+          "id": "lhymeLb2sIkypk6I",
+          "name": "QuickBooks Online account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const parent = $input.first().json.QueryResponse.Customer[0];\nreturn {\n  json: {\n    ...$('Generate Next mx Number').first().json,\n    parentCustomerId: parent.Id,\n    parentCustomerName: parent.CompanyName || parent.DisplayName\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10160,
+        4128
+      ],
+      "id": "45abf594-fb69-4944-be27-333ceb4b6543",
+      "name": "Extract Parent ID"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "a9f508b6-51bd-42a5-a809-8ff7099c2be0",
+              "leftValue": "={{ $json.QueryResponse.Customer }}",
+              "rightValue": "",
+              "operator": {
+                "type": "array",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        9888,
+        4160
+      ],
+      "id": "eab8d5a8-276e-4f3b-bec0-6e8651fb4f87",
+      "name": "IF: Parent Exists?"
+    },
+    {
+      "parameters": {
+        "url": "https://quickbooks.api.intuit.com/v3/company/193514766337794/query",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "quickBooksOAuth2Api",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "query",
+              "value": "=SELECT * FROM Customer WHERE DisplayName = '{{ $json.parentCustomerName }}: {{ $json.customerName }}' MAXRESULTS 1"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        10416,
+        4256
+      ],
+      "id": "3164894f-d5b4-4e09-b4da-b36f9930a6a5",
+      "name": "QBO: Search Sub-Customer",
+      "credentials": {
+        "quickBooksOAuth2Api": {
+          "id": "lhymeLb2sIkypk6I",
+          "name": "QuickBooks Online account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "c722d702-4fa0-41a4-afdf-1ff1a1c24dcc",
+              "leftValue": "={{ $json.QueryResponse?.Customer?.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "array",
+                "operation": "lengthGt",
+                "rightType": "number"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        10624,
+        4256
+      ],
+      "id": "1e6f226e-ce76-4ff9-ba96-478ff76d5923",
+      "name": "IF: Sub Exists?"
+    },
+    {
+      "parameters": {
+        "jsCode": "const sub = $input.first().json.QueryResponse.Customer[0];\nconst prevData = $('QBO: Search Sub-Customer').first().json;\nreturn {\n  json: {\n    ...$('Extract Parent ID').first().json,\n    qboCustomerId: sub.Id,\n    qboCustomerIsNew: false\n  }\n}"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10944,
+        4160
+      ],
+      "id": "cd638a3b-59b7-443b-8757-e32626437b62",
+      "name": "Use Existing Sub"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://quickbooks.api.intuit.com/v3/company/193514766337794/customer",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "quickBooksOAuth2Api",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.customerPayload) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        11056,
+        4336
+      ],
+      "id": "0e414261-f809-49af-80e5-ad7325be8eab",
+      "name": "QBO: Create Sub-Customer",
+      "credentials": {
+        "quickBooksOAuth2Api": {
+          "id": "lhymeLb2sIkypk6I",
+          "name": "QuickBooks Online account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $('Extract Parent ID').first().json;\nconst payload = {\n  DisplayName: data.customerName,\n  GivenName: data.customerName.split(' ')[0],\n  FamilyName: data.customerName.split(' ').slice(1).join(' '),\n  CompanyName: data.parentCustomerName,\n  Job: true,\n  ParentRef: {\n    value: String(data.parentCustomerId),\n    name: data.parentCustomerName\n  },\n  BillWithParent: false,\n  PrimaryEmailAddr: { Address: data.customerEmail },\n  PrimaryPhone: { FreeFormNumber: data.customerPhone || '' },\n  BillAddr: {\n    Line1: (data.billingAddress.street1 || '').replace(/\\n/g, ' '),\n    City: data.billingAddress.city || '',\n    CountrySubDivisionCode: data.billingAddress.state || '',\n    PostalCode: data.billingAddress.postalCode || '',\n    Country: data.billingAddress.country || 'US'\n  }\n};\n\nreturn {\n  json: {\n    customerPayload: payload\n  }\n}"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10816,
+        4352
+      ],
+      "id": "8248584a-9508-48ed-9620-658a4b68a60f",
+      "name": "Build Sub-Customer Payload"
+    },
+    {
+      "parameters": {
+        "jsCode": "const sub = $input.first().json.Customer;\nreturn {\n  json: {\n    ...$('Extract Parent ID').first().json,\n    qboCustomerId: sub.Id,\n    qboCustomerIsNew: true\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        11248,
+        4320
+      ],
+      "id": "fe48c0de-5122-466b-9a03-964c62c61922",
+      "name": "Use New Sub"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// BUILD QBO INVOICE WITH MX NUMBER\n// Avalara handles sales tax — no TaxCodeRef or TxnTaxDetail\n// ============================================================\n\nconst qboItemsResponse = $input.first().json;\nconst allQboItems = qboItemsResponse.QueryResponse?.Item || [];\n\n// Get customer data from whichever sub-customer branch executed\nlet prevData;\ntry {\n  prevData = $('Use New Sub').first().json;\n} catch (e) {\n  prevData = $('Use Existing Sub').first().json;\n}\n\n// Build SKU → QBO Item ID lookup\nconst skuToItemId = {};\nallQboItems.forEach(item => {\n  if (item.Sku) skuToItemId[item.Sku.trim().toUpperCase()] = item.Id;\n  if (item.Name) skuToItemId[item.Name.trim().toUpperCase()] = item.Id;\n});\n\nconst invoiceLines = prevData.lineItems.map(li => {\n  const skuKey = (li.sku || li.name || '').trim().toUpperCase();\n  const qboItemId = skuToItemId[skuKey];\n  \n  if (!qboItemId) {\n    console.log(`WARNING: No QBO item found for SKU \"${li.sku}\" / Name \"${li.name}\"`);\n  }\n  \n  const line = {\n    DetailType: 'SalesItemLineDetail',\n    Amount: li.quantity * li.unitPrice,\n    Description: li.description || li.name,\n    SalesItemLineDetail: {\n      Qty: li.quantity,\n      UnitPrice: li.unitPrice\n    }\n  };\n  \n  if (qboItemId) {\n    line.SalesItemLineDetail.ItemRef = { value: qboItemId.toString() };\n  }\n  \n  return line;\n});\n\nconst invoicePayload = {\n  CustomerRef: { value: prevData.qboCustomerId.toString() },\n  DocNumber: prevData.mxNumber,\n  TxnDate: new Date().toISOString().split('T')[0],\n  BillEmail: { Address: prevData.customerEmail },\n  ShipAddr: {\n    Line1: (prevData.shippingAddress.street1 || '').replace(/\\n/g, ' '),\n    City: prevData.shippingAddress.city,\n    CountrySubDivisionCode: prevData.shippingAddress.state,\n    PostalCode: prevData.shippingAddress.postalCode,\n    Country: prevData.shippingAddress.country\n  },\n  Line: invoiceLines,\n  PrivateNote: 'HubSpot Deal: ' + prevData.dealName + ' | Quote: ' + prevData.quoteNumber + ' | Deal ID: ' + prevData.dealId\n};\n\nreturn {\n  json: {\n    ...prevData,\n    invoicePayload: invoicePayload\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        11632,
+        4080
+      ],
+      "id": "ff702a0a-4c33-45f4-8edf-fe68fca02cb8",
+      "name": "Build Invoice Payload1"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 10
+            }
+          ]
+        }
+      },
+      "id": "ee01a117-35bc-47b4-885c-6bb6764debb1",
+      "name": "Poll Every 10 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        7024,
+        4336
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Search Confirmed Deals": {
+      "main": [
+        [
+          {
+            "node": "Deduplicate Deals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deduplicate Deals": {
+      "main": [
+        [
+          {
+            "node": "Get Deal Details",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Deal Details": {
+      "main": [
+        [
+          {
+            "node": "Get Contact",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Quote",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Quote": {
+      "main": [
+        [
+          {
+            "node": "Build Line Items Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Line Items Request": {
+      "main": [
+        [
+          {
+            "node": "Get Line Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Line Items": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Data": {
+      "main": [
+        [
+          {
+            "node": "SS: Create Order",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "QBO: Get Last Invoice Number",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Next mx Number": {
+      "main": [
+        [
+          {
+            "node": "SS: Create Order",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "HS: Write Invoice Number",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "QBO: Search Parent Customer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "QBO: Search Customer": {
+      "main": [
+        [
+          {
+            "node": "IF: Customer Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Customer Exists?": {
+      "main": [
+        [
+          {
+            "node": "Use Existing Customer",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "QBO: Create Customer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Use Existing Customer": {
+      "main": [
+        []
+      ]
+    },
+    "QBO: Create Customer": {
+      "main": [
+        [
+          {
+            "node": "Use New Customer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Use New Customer": {
+      "main": [
+        []
+      ]
+    },
+    "QBO: Get All Items": {
+      "main": [
+        [
+          {
+            "node": "Build Invoice Payload1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Invoice Payload": {
+      "main": [
+        []
+      ]
+    },
+    "QBO: Create Invoice": {
+      "main": [
+        []
+      ]
+    },
+    "SS: Create Order": {
+      "main": [
+        [
+          {
+            "node": "SS: Add Approval Tag",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SS: Add Approval Tag": {
+      "main": [
+        [
+          {
+            "node": "Slack: Order Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Search Confirmed Deals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Contact": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Get many customers": {
+      "main": [
+        [
+          {
+            "node": "Get many customers1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Normalize Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "QBO: Get Last Invoice Number": {
+      "main": [
+        [
+          {
+            "node": "Generate Next mx Number",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "QBO: Search Parent Customer": {
+      "main": [
+        [
+          {
+            "node": "IF: Parent Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Parent Exists?": {
+      "main": [
+        [
+          {
+            "node": "Extract Parent ID",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "QBO: Create Parent Customer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Parent ID": {
+      "main": [
+        [
+          {
+            "node": "QBO: Search Sub-Customer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "QBO: Create Parent Customer": {
+      "main": [
+        [
+          {
+            "node": "QBO: Search Sub-Customer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "QBO: Search Sub-Customer": {
+      "main": [
+        [
+          {
+            "node": "IF: Sub Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Sub Exists?": {
+      "main": [
+        [
+          {
+            "node": "Use Existing Sub",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Sub-Customer Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Sub-Customer Payload": {
+      "main": [
+        [
+          {
+            "node": "QBO: Create Sub-Customer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "QBO: Create Sub-Customer": {
+      "main": [
+        [
+          {
+            "node": "Use New Sub",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Use New Sub": {
+      "main": [
+        [
+          {
+            "node": "QBO: Get All Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Invoice Payload1": {
+      "main": [
+        [
+          {
+            "node": "QBO: Create Invoice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll Every 10 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Search Confirmed Deals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false,
+    "timeSavedMode": "fixed",
+    "timezone": "America/Chicago",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "versionId": "ad9d7540-e912-4de3-af11-633fefd53c2d",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "f0e0e919af7e12b5c590758565abe4df1903ec450015942da2f2bfe2f953540d"
+  },
+  "id": "LVDmePz5ZY7ITAg9",
+  "tags": [
+    {
+      "updatedAt": "2026-02-25T14:40:08.057Z",
+      "createdAt": "2026-02-25T14:40:08.057Z",
+      "id": "NAax26l1WOf1W6CK",
+      "name": "hubspot"
+    },
+    {
+      "updatedAt": "2026-02-25T14:40:08.072Z",
+      "createdAt": "2026-02-25T14:40:08.072Z",
+      "id": "YQjte3eRXJP27vEV",
+      "name": "quickbooks"
+    },
+    {
+      "updatedAt": "2026-02-25T14:40:08.076Z",
+      "createdAt": "2026-02-25T14:40:08.076Z",
+      "id": "kK8RmqvyHmSP1iAw",
+      "name": "shipstation"
+    },
+    {
+      "updatedAt": "2026-02-25T14:40:08.080Z",
+      "createdAt": "2026-02-25T14:40:08.080Z",
+      "id": "fRsbQsYbETAohxup",
+      "name": "invoicing"
+    },
+    {
+      "updatedAt": "2026-02-25T14:40:08.081Z",
+      "createdAt": "2026-02-25T14:40:08.081Z",
+      "id": "loZUwj32MTeDAGrK",
+      "name": "fulfillment"
+    },
+    {
+      "updatedAt": "2026-02-26T20:14:57.700Z",
+      "createdAt": "2026-02-26T20:14:57.700Z",
+      "id": "gjBzLeD6OpqNatRU",
+      "name": "phase-1"
+    }
+  ]
+}

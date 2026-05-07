@@ -1,0 +1,805 @@
+{
+  "name": "MX3 Sales Rep Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 6 * * *"
+            }
+          ]
+        }
+      },
+      "name": "Daily 6AM Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1472,
+        4016
+      ],
+      "id": "bd904679-9428-4de8-8345-7df9a9b51582"
+    },
+    {
+      "parameters": {},
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1456,
+        4240
+      ],
+      "id": "5de7be2d-6cfc-479d-8dd6-d4fb008d6aed"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$vars.HUBSPOT_API_BASE || 'https://api.hubapi.com'}}/crm/v3/objects/deals/search",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "hubspotAppToken",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n    filterGroups: [{\n      filters: [{\n        propertyName: 'createdate',\n        operator: 'GTE',\n        value: new Date(new Date().getFullYear(), 0, 1).getTime().toString()\n      },\n      {\n        propertyName: 'pipeline',\n        operator: 'EQ',\n        value: '1300571'\n      }]\n    }],\n    properties: [\n      'dealname', 'amount', 'closedate', 'dealstage',\n      'pipeline', 'hs_object_id',\n      'customer_type', 'industry',\n      'hs_is_closed_won', 'createdate',\n      'hubspot_owner_id', 'dealtype',\n      'num_associated_contacts',\n      'hs_date_entered_appointmentscheduled',\n      'hs_date_entered_qualifiedtobuy',\n      'hs_date_entered_contractsent',\n      'hs_date_entered_closedwon',\n      'days_to_close'\n    ],\n    sorts: [{ propertyName: 'createdate', direction: 'DESCENDING' }],\n    limit: 200\n  }) }}",
+        "options": {
+          "response": {
+            "response": {}
+          },
+          "pagination": {
+            "pagination": {
+              "paginationMode": "off"
+            }
+          }
+        }
+      },
+      "name": "HubSpot — Fetch Pipeline Deals",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -864,
+        4080
+      ],
+      "executeOnce": true,
+      "id": "26863b09-a111-4f31-8f53-daa6a4e0f407",
+      "credentials": {
+        "hubspotAppToken": {
+          "id": "qKhqn9XXJj7WpRHq",
+          "name": "HubSpot App Token account"
+        }
+      },
+      "notes": "Fetches ALL pipeline deals YTD (closed + open) for rep splitting."
+    },
+    {
+      "parameters": {
+        "url": "={{$vars.QUICKBOOKS_API_BASE || 'https://quickbooks.api.intuit.com'}}/v3/company/193514766337794/query?query=SELECT%20*%20FROM%20Invoice%20WHERE%20TxnDate%20%3E%3D%20'2026-01-01'%20MAXRESULTS%201000&minorversion=65",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "quickBooksOAuth2Api",
+        "options": {}
+      },
+      "name": "QuickBooks — Fetch Invoices YTD",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1248,
+        4192
+      ],
+      "id": "d694cfd6-5c7c-4a61-aa69-9decf3234e1a",
+      "credentials": {
+        "quickBooksOAuth2Api": {
+          "id": "lhymeLb2sIkypk6I",
+          "name": "QuickBooks Online account"
+        }
+      },
+      "notes": "Fetches all invoices for the current year."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT qbo_customer_id, qbo_customer_name, rep_id, vertical, first_invoice_date, industry FROM customer_rep_map;",
+        "options": {}
+      },
+      "name": "Postgres — Fetch Customer Map",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -1040,
+        4144
+      ],
+      "id": "54a155be-d2a5-4e04-aea6-a84a87fd6ccc",
+      "credentials": {
+        "postgres": {
+          "id": "eDrwSNwS2VQepOIH",
+          "name": "Postgres account"
+        }
+      },
+      "notes": "Loads customer-to-rep mapping for invoice attribution."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract deals array from HubSpot search response\nconst response = $input.first().json;\nconst deals = response.results || [];\nreturn deals.map(deal => ({\n  json: {\n    deal_id: deal.id,\n    ...deal.properties\n  }\n}));"
+      },
+      "name": "Split Deals",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -672,
+        4016
+      ],
+      "id": "cb8c8364-ea8b-472a-984b-0d1de9f5fa16"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.hubspot_owner_id }}",
+                    "rightValue": "474747224",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "89e64b93-9719-4d87-b667-033e673e091f"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Kinga"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.hubspot_owner_id }}",
+                    "rightValue": "83151154",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "870e9dac-1ac4-48da-8de1-fbc66ca4519d"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Pete"
+            }
+          ]
+        },
+        "looseTypeValidation": true,
+        "options": {
+          "fallbackOutput": "none"
+        }
+      },
+      "name": "Switch — Route by Rep",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        -480,
+        3920
+      ],
+      "id": "90723f02-39a8-46d6-9e11-94f7394ef96c"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════\n// KINGA — Rep Snapshot Compute\n// ═══════════════════════════════════════════\nconst REP_ID = 'kinga';\nconst deals = $input.all().map(i => i.json);\nconst invoiceResp = $('QuickBooks — Fetch Invoices YTD').first().json;\nconst invoices = invoiceResp.QueryResponse?.Invoice || [];\nconst custMap = $('Postgres — Fetch Customer Map').all().map(i => i.json);\n\n// Filter invoices to this rep's customers\nconst repCustIds = new Set(\n  custMap.filter(m => m.rep_id === REP_ID).map(m => m.qbo_customer_id)\n);\nconst repInvoices = invoices.filter(inv =>\n  repCustIds.has(String(inv.CustomerRef?.value))\n);\n\nconst now = new Date();\nconst yearStart = new Date(now.getFullYear(), 0, 1);\nconst qtrMonth = Math.floor(now.getMonth() / 3) * 3;\nconst qtrStart = new Date(now.getFullYear(), qtrMonth, 1);\nconst monStart = new Date(now.getFullYear(), now.getMonth(), 1);\n// Week start = Monday\nconst dayOfWeek = now.getDay() || 7;\nconst wkStart = new Date(now);\nwkStart.setDate(now.getDate() - dayOfWeek + 1);\nwkStart.setHours(0,0,0,0);\n\nfunction productRevenue(inv) {\n  return (inv.Line || [])\n    .filter(l => l.DetailType === 'SalesItemLineDetail')\n    .filter(l => {\n      const ref = l.SalesItemLineDetail?.ItemAccountRef?.name || '';\n      return ref.includes('41000') || ref.includes('43000') ||\n             ref.includes('44000') || ref.includes('45000');\n    })\n    .reduce((sum, l) => sum + parseFloat(l.Amount || 0), 0);\n}\n\nfunction inPeriod(inv, start) {\n  return new Date(inv.TxnDate) >= start;\n}\n\nconst rev_wtd = repInvoices.filter(i => inPeriod(i, wkStart)).reduce((s,i) => s + productRevenue(i), 0);\nconst rev_mtd = repInvoices.filter(i => inPeriod(i, monStart)).reduce((s,i) => s + productRevenue(i), 0);\nconst rev_qtd = repInvoices.filter(i => inPeriod(i, qtrStart)).reduce((s,i) => s + productRevenue(i), 0);\nconst rev_ytd = repInvoices.filter(i => inPeriod(i, yearStart)).reduce((s,i) => s + productRevenue(i), 0);\n\nconst closedDeals = deals.filter(d => d.hs_is_closed_won === 'true');\nconst deals_mtd = closedDeals.filter(d => new Date(d.closedate) >= monStart).length;\nconst deals_ytd = closedDeals.filter(d => new Date(d.closedate) >= yearStart).length;\n\nconst ytdInvoices = repInvoices.filter(i => inPeriod(i, yearStart));\nconst avg_order = ytdInvoices.length > 0 ? rev_ytd / ytdInvoices.length : 0;\n\n// Sales velocity: avg days from deal create to close\nconst velocities = closedDeals\n  .filter(d => d.createdate && d.closedate)\n  .map(d => (new Date(d.closedate) - new Date(d.createdate)) / 86400000);\nconst velocity = velocities.length > 0\n  ? velocities.reduce((a,b) => a+b, 0) / velocities.length : 0;\n\nconst today = now.toISOString().slice(0, 10);\n\nreturn [{\n  json: {\n    rep_id: REP_ID,\n    snapshot_date: today,\n    revenue_wtd: Math.round(rev_wtd * 100) / 100,\n    revenue_mtd: Math.round(rev_mtd * 100) / 100,\n    revenue_qtd: Math.round(rev_qtd * 100) / 100,\n    revenue_ytd: Math.round(rev_ytd * 100) / 100,\n    deals_closed_mtd: deals_mtd,\n    deals_closed_ytd: deals_ytd,\n    avg_order_size: Math.round(avg_order * 100) / 100,\n    sales_velocity_days: Math.round(velocity * 10) / 10\n  }\n}];"
+      },
+      "name": "Kinga — Compute Rep Snapshot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -224,
+        3616
+      ],
+      "id": "eedc9e1b-3a33-4a2e-ae06-7768e622c5eb"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════\n  // KINGA — Pipeline Deal Age\n  // ═══════════════════════════════════════════\n  const STAGE_NAMES = {\n    '4546923': 'Opportunities',\n    '4546927': 'Quote Sent',\n    '1337550105': 'Stale/Expired Quote',\n    '4546928': 'Closed Won (Invoice Sent)',\n    '943265375': 'Hold'\n  };\n\n  const deals = $input.all().map(i => i.json);\n  const today = new Date().toISOString().slice(0, 10);\n  const now = new Date();\n\n  const openDeals = deals.filter(d =>\n    d.hs_is_closed_won !== 'true' && d.dealstage !== 'closedlost'\n  );\n\n  return openDeals.map(d => {\n    const created = new Date(d.createdate);\n    const daysInStage = d.hs_lastmodifieddate\n      ? Math.floor((now - new Date(d.hs_lastmodifieddate)) / 86400000)\n      : Math.floor((now - created) / 86400000);\n\n    return {\n      json: {\n        rep_id: 'kinga',\n        deal_id: d.deal_id || d.hs_object_id,\n        deal_name: d.dealname,\n        stage: STAGE_NAMES[d.dealstage] || d.dealstage,\n        value: parseFloat(d.amount || 0),\n        days_in_stage: daysInStage,\n        last_stage_change: d.hs_lastmodifieddate || d.createdate,\n        snapshot_date: today\n      }\n    };\n  });"
+      },
+      "name": "Kinga — Pipeline Deal Age",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -224,
+        3776
+      ],
+      "id": "6f262446-899e-49b5-b83a-6f20ebce8518"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════\n// KINGA — Distributor Snapshots\n// ═══════════════════════════════════════════\nconst REP_ID = 'kinga';\nconst invoiceResp = $('QuickBooks — Fetch Invoices YTD').first().json;\nconst invoices = invoiceResp.QueryResponse?.Invoice || [];\nconst custMap = $('Postgres — Fetch Customer Map').all().map(i => i.json);\n\nconst repCusts = custMap.filter(m => m.rep_id === REP_ID);\nconst repCustIds = new Set(repCusts.map(m => m.qbo_customer_id));\nconst custVertical = Object.fromEntries(\n  repCusts.map(m => [m.qbo_customer_id, m.vertical])\n);\nconst custName = Object.fromEntries(\n  repCusts.map(m => [m.qbo_customer_id, m.qbo_customer_name])\n);\n\nconst now = new Date();\nconst yearStart = new Date(now.getFullYear(), 0, 1);\nconst qtrMonth = Math.floor(now.getMonth() / 3) * 3;\nconst qtrStart = new Date(now.getFullYear(), qtrMonth, 1);\nconst today = now.toISOString().slice(0, 10);\n\nfunction productRevenue(inv) {\n  return (inv.Line || [])\n    .filter(l => l.DetailType === 'SalesItemLineDetail')\n    .filter(l => {\n      const ref = l.SalesItemLineDetail?.ItemAccountRef?.name || '';\n      return ref.includes('41000') || ref.includes('43000') ||\n             ref.includes('44000') || ref.includes('45000');\n    })\n    .reduce((sum, l) => sum + parseFloat(l.Amount || 0), 0);\n}\n\n// Group by customer (distributor = customer in this context)\nconst byCustomer = {};\nfor (const inv of invoices) {\n  const cid = String(inv.CustomerRef?.value);\n  if (!repCustIds.has(cid)) continue;\n  if (!byCustomer[cid]) byCustomer[cid] = { ytd: 0, qtd: 0, deals: 0 };\n  const rev = productRevenue(inv);\n  const d = new Date(inv.TxnDate);\n  if (d >= yearStart) { byCustomer[cid].ytd += rev; byCustomer[cid].deals++; }\n  if (d >= qtrStart) { byCustomer[cid].qtd += rev; }\n}\n\nreturn Object.entries(byCustomer).map(([cid, data]) => ({\n  json: {\n    rep_id: REP_ID,\n    distributor_name: custName[cid] || cid,\n    sector: custVertical[cid] || 'Unknown',\n    revenue_ytd: Math.round(data.ytd * 100) / 100,\n    revenue_qtd: Math.round(data.qtd * 100) / 100,\n    deals_ytd: data.deals,\n    mom_growth: 0,\n    snapshot_date: today\n  }\n}));"
+      },
+      "name": "Kinga — Distributor Snapshots",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -224,
+        3936
+      ],
+      "id": "61811ace-0036-4ca4-bcc7-27c34274edb7"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════\n// KINGA — Sport Levels (v2: HubSpot industry-based)\n// ═══════════════════════════════════════════\n// REPLACES the v1 keyword pattern matcher (which defaulted everything to \"D1\").\n// Now reads `industry` straight off customer_rep_map (seeded from HubSpot).\n// Customers with NULL industry roll up as \"Unclassified\".\n\nconst REP_ID = 'kinga';\n\nconst invoiceResp = $('QuickBooks — Fetch Invoices YTD').first().json;\nconst invoices = invoiceResp.QueryResponse?.Invoice || [];\nconst custMap = $('Postgres — Fetch Customer Map').all().map(i => i.json);\n\nconst repCusts = custMap.filter(m => m.rep_id === REP_ID);\nconst repCustIds = new Set(repCusts.map(m => m.qbo_customer_id));\nconst industryByCustId = Object.fromEntries(\n  repCusts.map(m => [m.qbo_customer_id, m.industry || 'Unclassified'])\n);\n\nconst now = new Date();\nconst yearStart = new Date(now.getFullYear(), 0, 1);\nconst today = now.toISOString().slice(0, 10);\n\nfunction productRevenue(inv) {\n  return (inv.Line || [])\n    .filter(l => l.DetailType === 'SalesItemLineDetail')\n    .filter(l => {\n      const ref = l.SalesItemLineDetail?.ItemAccountRef?.name || '';\n      return ref.includes('41000') || ref.includes('43000') ||\n             ref.includes('44000') || ref.includes('45000');\n    })\n    .reduce((sum, l) => sum + parseFloat(l.Amount || 0), 0);\n}\n\n// Group by industry\nconst byIndustry = {};\nfor (const inv of invoices) {\n  const cid = String(inv.CustomerRef?.value);\n  if (!repCustIds.has(cid)) continue;\n  if (new Date(inv.TxnDate) < yearStart) continue;\n\n  const industry = industryByCustId[cid];\n  if (!byIndustry[industry]) {\n    byIndustry[industry] = { revenue: 0, deals: 0 };\n  }\n  byIndustry[industry].revenue += productRevenue(inv);\n  byIndustry[industry].deals += 1;\n}\n\nreturn Object.entries(byIndustry).map(([industry, vals]) => ({\n  json: {\n    rep_id: REP_ID,\n    snapshot_date: today,\n    level: industry,                                         // reused column; now stores industry\n    revenue_ytd: Math.round(vals.revenue * 100) / 100,\n    deals_ytd: vals.deals,\n    yoy_growth: 0,                                           // TODO: compute from prior-year snapshot\n  },\n}));\n"
+      },
+      "name": "Kinga — Sport Levels",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -224,
+        4096
+      ],
+      "id": "7671568f-541a-4f06-8662-aadb4d4bf4bf"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════\n// PETE — Rep Snapshot Compute\n// ═══════════════════════════════════════════\nconst REP_ID = 'pete';\nconst deals = $input.all().map(i => i.json);\nconst invoiceResp = $('QuickBooks — Fetch Invoices YTD').first().json;\nconst invoices = invoiceResp.QueryResponse?.Invoice || [];\nconst custMap = $('Postgres — Fetch Customer Map').all().map(i => i.json);\n\nconst repCustIds = new Set(\n  custMap.filter(m => m.rep_id === REP_ID).map(m => m.qbo_customer_id)\n);\nconst repInvoices = invoices.filter(inv =>\n  repCustIds.has(String(inv.CustomerRef?.value))\n);\n\nconst now = new Date();\nconst yearStart = new Date(now.getFullYear(), 0, 1);\nconst qtrMonth = Math.floor(now.getMonth() / 3) * 3;\nconst qtrStart = new Date(now.getFullYear(), qtrMonth, 1);\nconst monStart = new Date(now.getFullYear(), now.getMonth(), 1);\nconst dayOfWeek = now.getDay() || 7;\nconst wkStart = new Date(now);\nwkStart.setDate(now.getDate() - dayOfWeek + 1);\nwkStart.setHours(0,0,0,0);\n\nfunction productRevenue(inv) {\n  return (inv.Line || [])\n    .filter(l => l.DetailType === 'SalesItemLineDetail')\n    .filter(l => {\n      const ref = l.SalesItemLineDetail?.ItemAccountRef?.name || '';\n      return ref.includes('41000') || ref.includes('43000') ||\n             ref.includes('44000') || ref.includes('45000');\n    })\n    .reduce((sum, l) => sum + parseFloat(l.Amount || 0), 0);\n}\n\nfunction inPeriod(inv, start) {\n  return new Date(inv.TxnDate) >= start;\n}\n\nconst rev_wtd = repInvoices.filter(i => inPeriod(i, wkStart)).reduce((s,i) => s + productRevenue(i), 0);\nconst rev_mtd = repInvoices.filter(i => inPeriod(i, monStart)).reduce((s,i) => s + productRevenue(i), 0);\nconst rev_qtd = repInvoices.filter(i => inPeriod(i, qtrStart)).reduce((s,i) => s + productRevenue(i), 0);\nconst rev_ytd = repInvoices.filter(i => inPeriod(i, yearStart)).reduce((s,i) => s + productRevenue(i), 0);\n\nconst closedDeals = deals.filter(d => d.hs_is_closed_won === 'true');\nconst deals_mtd = closedDeals.filter(d => new Date(d.closedate) >= monStart).length;\nconst deals_ytd = closedDeals.filter(d => new Date(d.closedate) >= yearStart).length;\n\nconst ytdInvoices = repInvoices.filter(i => inPeriod(i, yearStart));\nconst avg_order = ytdInvoices.length > 0 ? rev_ytd / ytdInvoices.length : 0;\n\nconst velocities = closedDeals\n  .filter(d => d.createdate && d.closedate)\n  .map(d => (new Date(d.closedate) - new Date(d.createdate)) / 86400000);\nconst velocity = velocities.length > 0\n  ? velocities.reduce((a,b) => a+b, 0) / velocities.length : 0;\n\nconst today = now.toISOString().slice(0, 10);\n\nreturn [{\n  json: {\n    rep_id: REP_ID,\n    snapshot_date: today,\n    revenue_wtd: Math.round(rev_wtd * 100) / 100,\n    revenue_mtd: Math.round(rev_mtd * 100) / 100,\n    revenue_qtd: Math.round(rev_qtd * 100) / 100,\n    revenue_ytd: Math.round(rev_ytd * 100) / 100,\n    deals_closed_mtd: deals_mtd,\n    deals_closed_ytd: deals_ytd,\n    avg_order_size: Math.round(avg_order * 100) / 100,\n    sales_velocity_days: Math.round(velocity * 10) / 10\n  }\n}];"
+      },
+      "name": "Pete — Compute Rep Snapshot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -224,
+        4336
+      ],
+      "id": "8d1e5297-2c85-4062-95b1-fb776eb2f9d4"
+    },
+    {
+      "parameters": {
+        "jsCode": " // ═══════════════════════════════════════════\n  // PETE — Pipeline Deal Age\n  // ═══════════════════════════════════════════\n  const STAGE_NAMES = {\n    '4546923': 'Opportunities',\n    '4546927': 'Quote Sent',\n    '1337550105': 'Stale/Expired Quote',\n    '4546928': 'Closed Won (Invoice Sent)',\n    '943265375': 'Hold'\n  };\n\n  const deals = $input.all().map(i => i.json);\n  const today = new Date().toISOString().slice(0, 10);\n  const now = new Date();\n\n  const openDeals = deals.filter(d =>\n    d.hs_is_closed_won !== 'true' && d.dealstage !== 'closedlost'\n  );\n\n  return openDeals.map(d => {\n    const created = new Date(d.createdate);\n    const daysInStage = d.hs_lastmodifieddate\n      ? Math.floor((now - new Date(d.hs_lastmodifieddate)) / 86400000)\n      : Math.floor((now - created) / 86400000);\n\n    return {\n      json: {\n        rep_id: 'pete',\n        deal_id: d.deal_id || d.hs_object_id,\n        deal_name: d.dealname,\n        stage: STAGE_NAMES[d.dealstage] || d.dealstage,\n        value: parseFloat(d.amount || 0),\n        days_in_stage: daysInStage,\n        last_stage_change: d.hs_lastmodifieddate || d.createdate,\n        snapshot_date: today\n      }\n    };\n  });"
+      },
+      "name": "Pete — Pipeline Deal Age",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -224,
+        4496
+      ],
+      "id": "5f858d73-ccf3-48f7-8833-b4b5d0f623ce"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════\n// PETE — Distributor Snapshots\n// ═══════════════════════════════════════════\nconst REP_ID = 'pete';\nconst invoiceResp = $('QuickBooks — Fetch Invoices YTD').first().json;\nconst invoices = invoiceResp.QueryResponse?.Invoice || [];\nconst custMap = $('Postgres — Fetch Customer Map').all().map(i => i.json);\n\nconst repCusts = custMap.filter(m => m.rep_id === REP_ID);\nconst repCustIds = new Set(repCusts.map(m => m.qbo_customer_id));\nconst custVertical = Object.fromEntries(\n  repCusts.map(m => [m.qbo_customer_id, m.vertical])\n);\nconst custNameMap = Object.fromEntries(\n  repCusts.map(m => [m.qbo_customer_id, m.qbo_customer_name])\n);\n\nconst now = new Date();\nconst yearStart = new Date(now.getFullYear(), 0, 1);\nconst qtrMonth = Math.floor(now.getMonth() / 3) * 3;\nconst qtrStart = new Date(now.getFullYear(), qtrMonth, 1);\nconst today = now.toISOString().slice(0, 10);\n\nfunction productRevenue(inv) {\n  return (inv.Line || [])\n    .filter(l => l.DetailType === 'SalesItemLineDetail')\n    .filter(l => {\n      const ref = l.SalesItemLineDetail?.ItemAccountRef?.name || '';\n      return ref.includes('41000') || ref.includes('43000') ||\n             ref.includes('44000') || ref.includes('45000');\n    })\n    .reduce((sum, l) => sum + parseFloat(l.Amount || 0), 0);\n}\n\nconst byCustomer = {};\nfor (const inv of invoices) {\n  const cid = String(inv.CustomerRef?.value);\n  if (!repCustIds.has(cid)) continue;\n  if (!byCustomer[cid]) byCustomer[cid] = { ytd: 0, qtd: 0, deals: 0 };\n  const rev = productRevenue(inv);\n  const d = new Date(inv.TxnDate);\n  if (d >= yearStart) { byCustomer[cid].ytd += rev; byCustomer[cid].deals++; }\n  if (d >= qtrStart) { byCustomer[cid].qtd += rev; }\n}\n\nreturn Object.entries(byCustomer).map(([cid, data]) => ({\n  json: {\n    rep_id: REP_ID,\n    distributor_name: custNameMap[cid] || cid,\n    sector: custVertical[cid] || 'Unknown',\n    revenue_ytd: Math.round(data.ytd * 100) / 100,\n    revenue_qtd: Math.round(data.qtd * 100) / 100,\n    deals_ytd: data.deals,\n    mom_growth: 0,\n    snapshot_date: today\n  }\n}));"
+      },
+      "name": "Pete — Distributor Snapshots",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -224,
+        4656
+      ],
+      "id": "74829191-5de9-4fbe-acfb-0f62d7f3c7fe"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════\n// PETE — Product Breakdown\n// ═══════════════════════════════════════════\nconst REP_ID = 'pete';\nconst invoiceResp = $('QuickBooks — Fetch Invoices YTD').first().json;\nconst invoices = invoiceResp.QueryResponse?.Invoice || [];\nconst custMap = $('Postgres — Fetch Customer Map').all().map(i => i.json);\n\nconst repCustIds = new Set(\n  custMap.filter(m => m.rep_id === REP_ID).map(m => m.qbo_customer_id)\n);\n\nconst now = new Date();\nconst yearStart = new Date(now.getFullYear(), 0, 1);\nconst today = now.toISOString().slice(0, 10);\n\n// Account code to product line mapping\nconst PRODUCTS = {\n  '41000': 'Devices',\n  '44000': 'Strips',\n  '43000': 'Sweat Tests',\n  '45000': 'Accessories'\n};\n\nconst totals = {};\nfor (const key of Object.keys(PRODUCTS)) {\n  totals[key] = { units: 0, revenue: 0 };\n}\n\nfor (const inv of invoices) {\n  const cid = String(inv.CustomerRef?.value);\n  if (!repCustIds.has(cid)) continue;\n  if (new Date(inv.TxnDate) < yearStart) continue;\n\n  for (const line of (inv.Line || [])) {\n    if (line.DetailType !== 'SalesItemLineDetail') continue;\n    const acctName = line.SalesItemLineDetail?.ItemAccountRef?.name || '';\n    for (const [code, label] of Object.entries(PRODUCTS)) {\n      if (acctName.includes(code)) {\n        totals[code].revenue += parseFloat(line.Amount || 0);\n        totals[code].units += parseFloat(line.SalesItemLineDetail?.Qty || 0);\n      }\n    }\n  }\n}\n\nreturn Object.entries(PRODUCTS).map(([code, label]) => ({\n  json: {\n    rep_id: REP_ID,\n    snapshot_date: today,\n    product_line: label,\n    units_sold_ytd: Math.round(totals[code].units),\n    revenue_ytd: Math.round(totals[code].revenue * 100) / 100,\n    yoy_growth: 0\n  }\n}));"
+      },
+      "name": "Pete — Product Breakdown",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -224,
+        4816
+      ],
+      "id": "eef687ef-7dae-4262-8276-1f6f40d9049a"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════\n// PETE — Fallen Angels (inactive 90+ days)\n// ═══════════════════════════════════════════\nconst REP_ID = 'pete';\nconst invoiceResp = $('QuickBooks — Fetch Invoices YTD').first().json;\nconst invoices = invoiceResp.QueryResponse?.Invoice || [];\nconst custMap = $('Postgres — Fetch Customer Map').all().map(i => i.json);\n\nconst repCusts = custMap.filter(m => m.rep_id === REP_ID);\nconst repCustIds = new Set(repCusts.map(m => m.qbo_customer_id));\nconst custNameMap = Object.fromEntries(\n  repCusts.map(m => [m.qbo_customer_id, m.qbo_customer_name])\n);\n\nconst now = new Date();\nconst today = now.toISOString().slice(0, 10);\nconst NINETY_DAYS_AGO = new Date(now);\nNINETY_DAYS_AGO.setDate(now.getDate() - 90);\n\nfunction productRevenue(inv) {\n  return (inv.Line || [])\n    .filter(l => l.DetailType === 'SalesItemLineDetail')\n    .filter(l => {\n      const ref = l.SalesItemLineDetail?.ItemAccountRef?.name || '';\n      return ref.includes('41000') || ref.includes('43000') ||\n             ref.includes('44000') || ref.includes('45000');\n    })\n    .reduce((sum, l) => sum + parseFloat(l.Amount || 0), 0);\n}\n\n// Build customer purchase history\nconst custHistory = {};\nfor (const inv of invoices) {\n  const cid = String(inv.CustomerRef?.value);\n  if (!repCustIds.has(cid)) continue;\n  if (!custHistory[cid]) custHistory[cid] = { lastDate: null, totalRev: 0 };\n  const d = new Date(inv.TxnDate);\n  if (!custHistory[cid].lastDate || d > custHistory[cid].lastDate) {\n    custHistory[cid].lastDate = d;\n  }\n  custHistory[cid].totalRev += productRevenue(inv);\n}\n\n// Filter to customers whose last purchase was 90+ days ago\nconst fallenAngels = Object.entries(custHistory)\n  .filter(([cid, data]) => data.lastDate && data.lastDate < NINETY_DAYS_AGO)\n  .map(([cid, data]) => ({\n    json: {\n      rep_id: REP_ID,\n      customer_name: custNameMap[cid] || cid,\n      last_purchase_date: data.lastDate.toISOString().slice(0, 10),\n      days_inactive: Math.floor((now - data.lastDate) / 86400000),\n      lifetime_revenue: Math.round(data.totalRev * 100) / 100,\n      snapshot_date: today\n    }\n  }));\n\n// Return at least one empty item if no fallen angels\nif (fallenAngels.length === 0) {\n  return [{ json: { _empty: true, rep_id: REP_ID, snapshot_date: today } }];\n}\nreturn fallenAngels;"
+      },
+      "name": "Pete — Fallen Angels",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -224,
+        4976
+      ],
+      "id": "50f3a469-809a-4d41-a2d4-aeb56ec9ace4"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO rep_snapshots (rep_id, snapshot_date, revenue_wtd, revenue_mtd, revenue_qtd, revenue_ytd, deals_closed_mtd, deals_closed_ytd, avg_order_size, sales_velocity_days)\nVALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\nON CONFLICT (rep_id, snapshot_date) DO UPDATE SET\n  revenue_wtd = EXCLUDED.revenue_wtd, revenue_mtd = EXCLUDED.revenue_mtd,\n  revenue_qtd = EXCLUDED.revenue_qtd, revenue_ytd = EXCLUDED.revenue_ytd,\n  deals_closed_mtd = EXCLUDED.deals_closed_mtd, deals_closed_ytd = EXCLUDED.deals_closed_ytd,\n  avg_order_size = EXCLUDED.avg_order_size, sales_velocity_days = EXCLUDED.sales_velocity_days\nRETURNING *;",
+        "options": {
+          "queryReplacement": "={{ [$json.rep_id, $json.snapshot_date, $json.revenue_wtd, $json.revenue_mtd, $json.revenue_qtd, $json.revenue_ytd, $json.deals_closed_mtd, $json.deals_closed_ytd, $json.avg_order_size, $json.sales_velocity_days] }}"
+        }
+      },
+      "name": "Postgres — Upsert Kinga Snapshot",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        64,
+        3616
+      ],
+      "alwaysOutputData": true,
+      "id": "b7fc5a5c-5890-40ec-9208-bcdf706a01a7",
+      "credentials": {
+        "postgres": {
+          "id": "eDrwSNwS2VQepOIH",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO rep_pipeline_deals (rep_id, deal_id, deal_name, stage, value, days_in_stage, last_stage_change, snapshot_date)\nVALUES ($1, $2, $3, $4, $5, $6, $7, $8)\nON CONFLICT (rep_id, deal_id, snapshot_date) DO UPDATE SET\n  deal_name = EXCLUDED.deal_name, stage = EXCLUDED.stage,\n  value = EXCLUDED.value, days_in_stage = EXCLUDED.days_in_stage,\n  last_stage_change = EXCLUDED.last_stage_change\nRETURNING *;",
+        "options": {
+          "queryReplacement": "={{ [$json.rep_id, $json.deal_id, $json.deal_name, $json.stage, $json.value, $json.days_in_stage, $json.last_stage_change, $json.snapshot_date] }}"
+        }
+      },
+      "name": "Postgres — Upsert Kinga Pipeline",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        64,
+        3776
+      ],
+      "alwaysOutputData": true,
+      "id": "f614002f-19c0-4919-b3e1-0b3438f41a87",
+      "credentials": {
+        "postgres": {
+          "id": "eDrwSNwS2VQepOIH",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO rep_distributor_snapshots (rep_id, distributor_name, sector, revenue_ytd, revenue_qtd, deals_ytd, mom_growth, snapshot_date)\nVALUES ($1, $2, $3, $4, $5, $6, $7, $8)\nON CONFLICT (rep_id, distributor_name, snapshot_date) DO UPDATE SET\n  sector = EXCLUDED.sector, revenue_ytd = EXCLUDED.revenue_ytd,\n  revenue_qtd = EXCLUDED.revenue_qtd, deals_ytd = EXCLUDED.deals_ytd,\n  mom_growth = EXCLUDED.mom_growth\nRETURNING *;",
+        "options": {
+          "queryReplacement": "={{ [$json.rep_id, $json.distributor_name, $json.sector, $json.revenue_ytd, $json.revenue_qtd, $json.deals_ytd, $json.mom_growth, $json.snapshot_date] }}"
+        }
+      },
+      "name": "Postgres — Upsert Kinga Distributors",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        64,
+        3936
+      ],
+      "alwaysOutputData": true,
+      "id": "305cbbdc-55e3-42b6-bb2b-690ca7962b2a",
+      "credentials": {
+        "postgres": {
+          "id": "eDrwSNwS2VQepOIH",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO sport_level_snapshots (rep_id, snapshot_date, level, revenue_ytd, deals_ytd, yoy_growth)\nVALUES ($1, $2, $3, $4, $5, $6)\nON CONFLICT (rep_id, snapshot_date, level) DO UPDATE SET\n  revenue_ytd = EXCLUDED.revenue_ytd, deals_ytd = EXCLUDED.deals_ytd,\n  yoy_growth = EXCLUDED.yoy_growth\nRETURNING *;",
+        "options": {
+          "queryReplacement": "={{ [$json.rep_id, $json.snapshot_date, $json.level, $json.revenue_ytd, $json.deals_ytd, $json.yoy_growth] }}"
+        }
+      },
+      "name": "Postgres — Upsert Sport Levels",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        64,
+        4096
+      ],
+      "alwaysOutputData": true,
+      "id": "05dcec3b-3887-444b-ba7f-81975fca1536",
+      "credentials": {
+        "postgres": {
+          "id": "eDrwSNwS2VQepOIH",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO rep_snapshots (rep_id, snapshot_date, revenue_wtd, revenue_mtd, revenue_qtd, revenue_ytd, deals_closed_mtd, deals_closed_ytd, avg_order_size, sales_velocity_days)\nVALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\nON CONFLICT (rep_id, snapshot_date) DO UPDATE SET\n  revenue_wtd = EXCLUDED.revenue_wtd, revenue_mtd = EXCLUDED.revenue_mtd,\n  revenue_qtd = EXCLUDED.revenue_qtd, revenue_ytd = EXCLUDED.revenue_ytd,\n  deals_closed_mtd = EXCLUDED.deals_closed_mtd, deals_closed_ytd = EXCLUDED.deals_closed_ytd,\n  avg_order_size = EXCLUDED.avg_order_size, sales_velocity_days = EXCLUDED.sales_velocity_days\nRETURNING *;",
+        "options": {
+          "queryReplacement": "={{ [$json.rep_id, $json.snapshot_date, $json.revenue_wtd, $json.revenue_mtd, $json.revenue_qtd, $json.revenue_ytd, $json.deals_closed_mtd, $json.deals_closed_ytd, $json.avg_order_size, $json.sales_velocity_days] }}"
+        }
+      },
+      "name": "Postgres — Upsert Pete Snapshot",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        64,
+        4336
+      ],
+      "alwaysOutputData": true,
+      "id": "da2c5b9e-77d7-443c-b3db-65be9aeeef08",
+      "credentials": {
+        "postgres": {
+          "id": "eDrwSNwS2VQepOIH",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO rep_pipeline_deals (rep_id, deal_id, deal_name, stage, value, days_in_stage, last_stage_change, snapshot_date)\nVALUES ($1, $2, $3, $4, $5, $6, $7, $8)\nON CONFLICT (rep_id, deal_id, snapshot_date) DO UPDATE SET\n  deal_name = EXCLUDED.deal_name, stage = EXCLUDED.stage,\n  value = EXCLUDED.value, days_in_stage = EXCLUDED.days_in_stage,\n  last_stage_change = EXCLUDED.last_stage_change\nRETURNING *;",
+        "options": {
+          "queryReplacement": "={{ [$json.rep_id, $json.deal_id, $json.deal_name, $json.stage, $json.value, $json.days_in_stage, $json.last_stage_change, $json.snapshot_date] }}"
+        }
+      },
+      "name": "Postgres — Upsert Pete Pipeline",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        64,
+        4496
+      ],
+      "alwaysOutputData": true,
+      "id": "21f4a40a-bcfc-4423-85eb-9d88e8cbc8a4",
+      "credentials": {
+        "postgres": {
+          "id": "eDrwSNwS2VQepOIH",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO rep_distributor_snapshots (rep_id, distributor_name, sector, revenue_ytd, revenue_qtd, deals_ytd, mom_growth, snapshot_date)\nVALUES ($1, $2, $3, $4, $5, $6, $7, $8)\nON CONFLICT (rep_id, distributor_name, snapshot_date) DO UPDATE SET\n  sector = EXCLUDED.sector, revenue_ytd = EXCLUDED.revenue_ytd,\n  revenue_qtd = EXCLUDED.revenue_qtd, deals_ytd = EXCLUDED.deals_ytd,\n  mom_growth = EXCLUDED.mom_growth\nRETURNING *;",
+        "options": {
+          "queryReplacement": "={{ [$json.rep_id, $json.distributor_name, $json.sector, $json.revenue_ytd, $json.revenue_qtd, $json.deals_ytd, $json.mom_growth, $json.snapshot_date] }}"
+        }
+      },
+      "name": "Postgres — Upsert Pete Distributors",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        64,
+        4656
+      ],
+      "alwaysOutputData": true,
+      "id": "b33acf98-20dc-46f4-8020-5bfe0ed40c51",
+      "credentials": {
+        "postgres": {
+          "id": "eDrwSNwS2VQepOIH",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO product_snapshots (rep_id, snapshot_date, product_line, units_sold_ytd, revenue_ytd, yoy_growth)\nVALUES ($1, $2, $3, $4, $5, $6)\nON CONFLICT (rep_id, snapshot_date, product_line) DO UPDATE SET\n  units_sold_ytd = EXCLUDED.units_sold_ytd, revenue_ytd = EXCLUDED.revenue_ytd,\n  yoy_growth = EXCLUDED.yoy_growth\nRETURNING *;",
+        "options": {
+          "queryReplacement": "={{ [$json.rep_id, $json.snapshot_date, $json.product_line, $json.units_sold_ytd, $json.revenue_ytd, $json.yoy_growth] }}"
+        }
+      },
+      "name": "Postgres — Upsert Product Snapshots",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        64,
+        4816
+      ],
+      "alwaysOutputData": true,
+      "id": "39e7ac11-e6a1-4181-b3f7-89963c23c2d1",
+      "credentials": {
+        "postgres": {
+          "id": "eDrwSNwS2VQepOIH",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO fallen_angels (rep_id, customer_name, last_purchase_date, days_inactive, lifetime_revenue, snapshot_date)\nVALUES ($1, $2, $3, $4, $5, $6)\nON CONFLICT (rep_id, customer_name, snapshot_date) DO UPDATE SET\n  last_purchase_date = EXCLUDED.last_purchase_date, days_inactive = EXCLUDED.days_inactive,\n  lifetime_revenue = EXCLUDED.lifetime_revenue\nRETURNING *;",
+        "options": {
+          "queryReplacement": "={{ $json._empty ? [] : [$json.rep_id, $json.customer_name, $json.last_purchase_date, $json.days_inactive, $json.lifetime_revenue, $json.snapshot_date] }}"
+        }
+      },
+      "name": "Postgres — Upsert Fallen Angels",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        64,
+        4976
+      ],
+      "alwaysOutputData": true,
+      "id": "a82ca3e8-7ecf-4e28-8c27-2871c4bb31d9",
+      "credentials": {
+        "postgres": {
+          "id": "eDrwSNwS2VQepOIH",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## MX3 Sales Rep Pipeline\n\n**Triggers:** Daily 6AM + Manual\n\n**Data Sources:**\n- HubSpot: Pipeline deals (all stages) → split by owner_id\n- QuickBooks: YTD invoices → revenue attribution via customer_rep_map\n- Postgres: customer_rep_map for customer → rep → vertical lookup\n\n**Kinga (66346501):** Rep Snapshot, Pipeline Deals, Distributors, Sport Levels\n**Pete (25071367):** Rep Snapshot, Pipeline Deals, Distributors, Products, Fallen Angels\n\n**Tables written:** rep_snapshots, rep_pipeline_deals, rep_distributor_snapshots,\nsport_level_snapshots, product_snapshots, fallen_angels"
+      },
+      "name": "Workflow Documentation",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1424,
+        3824
+      ],
+      "parameters_extra": {
+        "width": 380,
+        "height": 400
+      },
+      "id": "ed69a4d7-5fef-425d-9a85-4d30d70fc001"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Daily 6AM Trigger": {
+      "main": [
+        [
+          {
+            "node": "QuickBooks — Fetch Invoices YTD",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "QuickBooks — Fetch Invoices YTD",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "QuickBooks — Fetch Invoices YTD": {
+      "main": [
+        [
+          {
+            "node": "Postgres — Fetch Customer Map",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres — Fetch Customer Map": {
+      "main": [
+        [
+          {
+            "node": "HubSpot — Fetch Pipeline Deals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HubSpot — Fetch Pipeline Deals": {
+      "main": [
+        [
+          {
+            "node": "Split Deals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Deals": {
+      "main": [
+        [
+          {
+            "node": "Switch — Route by Rep",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch — Route by Rep": {
+      "main": [
+        [
+          {
+            "node": "Kinga — Compute Rep Snapshot",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Kinga — Pipeline Deal Age",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Kinga — Distributor Snapshots",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Kinga — Sport Levels",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Pete — Compute Rep Snapshot",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Pete — Pipeline Deal Age",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Pete — Distributor Snapshots",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Pete — Product Breakdown",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Pete — Fallen Angels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Kinga — Compute Rep Snapshot": {
+      "main": [
+        [
+          {
+            "node": "Postgres — Upsert Kinga Snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Kinga — Pipeline Deal Age": {
+      "main": [
+        [
+          {
+            "node": "Postgres — Upsert Kinga Pipeline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Kinga — Distributor Snapshots": {
+      "main": [
+        [
+          {
+            "node": "Postgres — Upsert Kinga Distributors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Kinga — Sport Levels": {
+      "main": [
+        [
+          {
+            "node": "Postgres — Upsert Sport Levels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pete — Compute Rep Snapshot": {
+      "main": [
+        [
+          {
+            "node": "Postgres — Upsert Pete Snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pete — Pipeline Deal Age": {
+      "main": [
+        [
+          {
+            "node": "Postgres — Upsert Pete Pipeline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pete — Distributor Snapshots": {
+      "main": [
+        [
+          {
+            "node": "Postgres — Upsert Pete Distributors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pete — Product Breakdown": {
+      "main": [
+        [
+          {
+            "node": "Postgres — Upsert Product Snapshots",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pete — Fallen Angels": {
+      "main": [
+        [
+          {
+            "node": "Postgres — Upsert Fallen Angels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "timezone": "America/Chicago",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": true
+  },
+  "versionId": "bc035652-9a43-481e-996c-287ea77cb6a2",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "f0e0e919af7e12b5c590758565abe4df1903ec450015942da2f2bfe2f953540d"
+  },
+  "id": "fvQTsBNuarAXT6n4",
+  "tags": [
+    {
+      "updatedAt": "2026-03-24T21:10:39.986Z",
+      "createdAt": "2026-03-24T21:10:39.986Z",
+      "id": "Z6o2Ih3pA4cLfk32",
+      "name": "mx3"
+    },
+    {
+      "updatedAt": "2026-03-24T21:10:40.005Z",
+      "createdAt": "2026-03-24T21:10:40.005Z",
+      "id": "EyhCjTtjJBuCElq0",
+      "name": "production"
+    },
+    {
+      "updatedAt": "2026-03-24T21:10:40.088Z",
+      "createdAt": "2026-03-24T21:10:40.088Z",
+      "id": "qwR7oqwthKIslZVn",
+      "name": "dashboard"
+    }
+  ]
+}

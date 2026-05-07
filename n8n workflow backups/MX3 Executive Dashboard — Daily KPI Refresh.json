@@ -1,0 +1,776 @@
+{
+  "name": "MX3 Executive Dashboard — Daily KPI Refresh",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 6
+            }
+          ]
+        }
+      },
+      "id": "db95d7bc-a415-4751-a46b-c8efdd440fd3",
+      "name": "Daily 6AM Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -416,
+        352
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "59f963bc-85cb-4f38-bbf2-f38b0bd9d406",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -400,
+        688
+      ],
+      "notes": "Use this to test the workflow manually"
+    },
+    {
+      "parameters": {
+        "content": "## MX3 Executive Dashboard — Daily Refresh\n\n**Schedule:** Every day at 6:00 AM\n\n**Sources:**\n- HubSpot CRM (deals, contacts, leads, product line items)\n- QuickBooks (revenue, invoices)\n\n**Output:** Railway Postgres (KPI snapshots + daily briefing)\n\n**Markets:** Workplace Safety, Athletics, Military, Healthcare\n\n**Pipeline:**\n1. Fetch HubSpot + QuickBooks (parallel)\n2. Merge + compute KPIs\n3. Write snapshots to Postgres\n4. Compute MoM growth\n5. Read fresh data + compute projection\n6. OpenRouter → Claude generates briefing\n7. Save briefing to Postgres\n8. Slack confirmation\n\n**Variables needed:**\n- OPENROUTER_API_KEY\n- HUBSPOT_CREDENTIAL_ID\n- QUICKBOOKS_CREDENTIAL_ID\n- RAILWAY_POSTGRES_CREDENTIAL_ID\n- SLACK_CHANNEL_ID",
+        "height": 280,
+        "width": 360
+      },
+      "id": "ed264fbb-d244-42de-8b5a-0c972d88b443",
+      "name": "Workflow Documentation",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -528,
+        -192
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$vars.HUBSPOT_API_BASE || 'https://api.hubapi.com'}}/crm/v3/objects/leads/search",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "hubspotAppToken",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "= {{ JSON.stringify({\n    filterGroups: [{\n      filters: [{\n        propertyName: 'hs_createdate',\n        operator: 'GTE',\n        value: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).getTime().toString()\n      }]\n    }],\n    properties: ['hs_createdate', 'hs_pipeline', 'hs_pipeline_stage'],\n    limit: 100\n  }) }}",
+        "options": {}
+      },
+      "id": "d1d6a470-a25a-48be-b576-2021584ecca6",
+      "name": "HubSpot — Fetch Inbound Leads",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -16,
+        736
+      ],
+      "credentials": {
+        "hubspotAppToken": {
+          "id": "qKhqn9XXJj7WpRHq",
+          "name": "HubSpot App Token account"
+        }
+      },
+      "notes": "Fetches leads created this month for daily lead count and 7-day average."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH current_month AS (\n    SELECT\n      COALESCE(MAX(revenue_mtd), 0) as current_revenue,\n      COALESCE(SUM(daily_inbound_leads), 0) as current_leads,\n      COALESCE(MAX(deals_closed_mtd), 0) as current_new_customers\n    FROM daily_snapshots\n    WHERE snapshot_date >= date_trunc('month', CURRENT_DATE)\n  ),\n  prior_month AS (\n    SELECT\n      COALESCE(MAX(revenue_mtd), 0) as prior_revenue,\n      COALESCE(SUM(daily_inbound_leads), 0) as prior_leads,\n      COALESCE(MAX(deals_closed_mtd), 0) as prior_new_customers\n    FROM daily_snapshots\n    WHERE snapshot_date >= date_trunc('month', CURRENT_DATE - INTERVAL '1 month')\n      AND snapshot_date < date_trunc('month', CURRENT_DATE)\n  )\n  UPDATE daily_snapshots SET\n    revenue_mom_pct = CASE WHEN pm.prior_revenue > 0\n      THEN ROUND(((cm.current_revenue - pm.prior_revenue) / pm.prior_revenue * 100)::numeric,\n  1)\n      ELSE 0 END,\n    lead_volume_mom_pct = CASE WHEN pm.prior_leads > 0\n      THEN ROUND(((cm.current_leads - pm.prior_leads)::numeric / pm.prior_leads *\n  100)::numeric, 1)\n      ELSE 0 END,\n    new_customers_mom_pct = CASE WHEN pm.prior_new_customers > 0\n      THEN ROUND(((cm.current_new_customers - pm.prior_new_customers)::numeric /\n  pm.prior_new_customers * 100)::numeric, 1)\n      ELSE 0 END\n  FROM current_month cm, prior_month pm\n  WHERE daily_snapshots.snapshot_date = CURRENT_DATE;\n\n  WITH current_verticals AS (\n    SELECT vertical_id, revenue_wtd, revenue_mtd, deals_closed_wtd, deals_closed_mtd\n    FROM vertical_snapshots\n    WHERE snapshot_date = CURRENT_DATE\n  ),\n  prior_week_verticals AS (\n    SELECT vertical_id,\n      MAX(revenue_wtd) as prior_revenue_wtd,\n      MAX(deals_closed_wtd) as prior_deals_wtd\n    FROM vertical_snapshots\n    WHERE snapshot_date >= CURRENT_DATE - INTERVAL '7 days'\n      AND snapshot_date < CURRENT_DATE\n    GROUP BY vertical_id\n  ),\n  prior_month_verticals AS (\n    SELECT vertical_id,\n      MAX(revenue_mtd) as prior_revenue_mtd,\n      MAX(deals_closed_mtd) as prior_deals_mtd\n    FROM vertical_snapshots\n    WHERE snapshot_date >= date_trunc('month', CURRENT_DATE - INTERVAL '1 month')\n      AND snapshot_date < date_trunc('month', CURRENT_DATE)\n    GROUP BY vertical_id\n  )\n  UPDATE vertical_snapshots vs SET\n    revenue_wow_pct = CASE WHEN pw.prior_revenue_wtd > 0\n      THEN ROUND(((cv.revenue_wtd - pw.prior_revenue_wtd) / pw.prior_revenue_wtd *\n  100)::numeric, 1)\n      ELSE 0 END,\n    revenue_mom_pct = CASE WHEN pm.prior_revenue_mtd > 0\n      THEN ROUND(((cv.revenue_mtd - pm.prior_revenue_mtd) / pm.prior_revenue_mtd *\n  100)::numeric, 1)\n      ELSE 0 END,\n    deals_wow_pct = CASE WHEN pw.prior_deals_wtd > 0\n      THEN ROUND(((cv.deals_closed_wtd - pw.prior_deals_wtd)::numeric / pw.prior_deals_wtd *\n  100)::numeric, 1)\n      ELSE 0 END,\n    deals_mom_pct = CASE WHEN pm.prior_deals_mtd > 0\n      THEN ROUND(((cv.deals_closed_mtd - pm.prior_deals_mtd)::numeric / pm.prior_deals_mtd *\n  100)::numeric, 1)\n      ELSE 0 END\n  FROM current_verticals cv\n  LEFT JOIN prior_week_verticals pw ON pw.vertical_id = cv.vertical_id\n  LEFT JOIN prior_month_verticals pm ON pm.vertical_id = cv.vertical_id\n  WHERE vs.snapshot_date = CURRENT_DATE\n    AND vs.vertical_id = cv.vertical_id\n  RETURNING vs.*;",
+        "options": {}
+      },
+      "id": "22c06303-9c20-4fa6-b92d-0f71a0ee0435",
+      "name": "Postgres — Compute MoM Growth",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1760,
+        736
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "eDrwSNwS2VQepOIH",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nreturn items.map(item => {\n  item.json._source = 'leads';\n  return item;\n});"
+      },
+      "id": "38720131-1f98-46e1-b705-d0d54399e9ff",
+      "name": "Tag: Leads",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        496,
+        848
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0AP89JKV7B",
+          "mode": "id"
+        },
+        "text": "= 📊 *MX3 Daily Brief* — {{ $now.format('EEEE, MMMM d') }}\n\n  *This week's activity:*\n  • {{ $('Postgres — Daily KPIs').first().json.deals_closed_wtd || 0 }} deals closed / ${{ Math.round($('Postgres — Daily KPIs').first().json.revenue_wtd || 0).toLocaleString() }} WTD\n  • Top vertical WTD: {{ ($('Postgres — Vertical KPIs').all().map(i => i.json).sort((a, b) => parseFloat(b.revenue_wtd) - parseFloat(a.revenue_wtd))[0] || {}).vertical_name || 'n/a' }} (${{\n  Math.round(parseFloat(($('Postgres — Vertical KPIs').all().map(i => i.json).sort((a, b) => parseFloat(b.revenue_wtd) - parseFloat(a.revenue_wtd))[0] || {}).revenue_wtd || 0)).toLocaleString() }})\n\n  *Top priority today:*\n    {{ (JSON.parse($('Parse Briefing Response').first().json.actions || '[]').sort((a, b) => ({high:0,medium:1,low:2}[a.urgency] - {high:0,medium:1,low:2}[b.urgency]))[0] || {}).action || 'No action items' }}\n\n  *Position:*\n  YTD ${{ Math.round($('Postgres — Daily KPIs').first().json.revenue_ytd || 0).toLocaleString() }} / $2.5M ({{ (($('Postgres — Daily KPIs').first().json.revenue_ytd || 0) / 2500000 * 100).toFixed(1) }}%) — MoM\n  {{ ($('Prepare Briefing Data').first().json.briefing_data.kpis.revenue_mom_pct || 0) >= 0 ? '↑' : '↓' }}{{ Math.abs($('Prepare Briefing Data').first().json.briefing_data.kpis.revenue_mom_pct || 0) }}%\n  New customers MTD: {{ $('Postgres — Daily KPIs').first().json.new_customer_deals || 0 }} deals / ${{ Math.round($('Postgres — Daily KPIs').first().json.new_customer_revenue || 0).toLocaleString() }}\n  Inbound leads yesterday: {{ $('Compute Lead Metrics').first().json.daily_inbound_leads || 0 }}\n\n  <https://mx3-dashboard-production-61a7.up.railway.app/|View Dashboard>",
+        "otherOptions": {}
+      },
+      "id": "0b393c2f-5b27-46bd-8f02-c2a0044436c2",
+      "name": "Slack — Success Notification",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        3152,
+        576
+      ],
+      "webhookId": "f32b80a5-1cff-4dfb-9c9a-cd4162442eec",
+      "executeOnce": true,
+      "credentials": {
+        "slackApi": {
+          "id": "eck08smAXuUyv1Mm",
+          "name": "Slack account Executive dashboard"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ (() => {\n    const d = $json.briefing_data || {};\n    const k = d.kpis || {};\n    const verts = d.verticals || [];\n    const monthly = d.monthly_revenue || [];\n    const annual = d.annual_target || 0;\n\n    // Prorate the current in-progress month so projection isn't biased low\n    const now = new Date();\n    const dayOfMonth = now.getDate();\n    const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();\n    const currentMonthPrefix = now.toISOString().slice(0, 7);\n\n    const revenues = monthly.map(m => {\n      const rev = m.revenue || 0;\n      if (m.month && m.month.startsWith(currentMonthPrefix)) {\n        return rev * (daysInMonth / dayOfMonth);\n      }\n      return rev;\n    }).filter(Boolean);\n\n    const monthsLeft = 12 - revenues.length;\n    let base = 0, pessimistic = 0, optimistic = 0;\n    if (revenues.length >= 2) {\n      const weights = revenues.map((_, i) => i + 1);\n      const wSum = revenues.reduce((s, v, i) => s + v * weights[i], 0);\n      const wTotal = weights.reduce((a, b) => a + b, 0);\n      const avgWeighted = wSum / wTotal;\n      const recent3 = revenues.slice(-3);\n      base = (k.revenue_ytd || 0) + avgWeighted * monthsLeft;\n      pessimistic = (k.revenue_ytd || 0) + Math.min(...recent3) * monthsLeft;\n      optimistic = (k.revenue_ytd || 0) + Math.max(...recent3) * monthsLeft;\n    }\n\n    const vertLines = verts.map(v =>\n      '- ' + v.vertical_name + ': $' + Math.round(v.revenue_qtd || 0).toLocaleString() + ' / $' +\n      Math.round(v.goal_qtd || 0).toLocaleString() + ' (' + (v.goal_qtd > 0 ? (v.revenue_qtd / v.goal_qtd * 100).toFixed(0) : '0') + '%)'\n    ).join('\\n');\n\n    return JSON.stringify({\n      model: 'anthropic/claude-sonnet-4-6',\n      max_tokens: 1024,\n      messages: [{\n        role: 'user',\n        content: `You are the chief of staff for MX3 Diagnostics, a medical device company that sells hydration testing systems (HTS Pro) and consumable hydration test strips. Revenue comes from device sales,\n  test strip reorders, and sweat test kits. Do NOT use razor/blade terminology. Write today's executive briefing from this data.\n\n  DATA:\n  - YTD Revenue: $${Math.round(k.revenue_ytd || 0).toLocaleString()} (Annual target: $${Math.round(annual).toLocaleString()})\n  - YTD Progress: ${annual > 0 ? ((k.revenue_ytd || 0) / annual * 100).toFixed(1) : '0'}%\n  - Revenue MoM growth: ${k.revenue_mom_pct || 0}%\n  - Sales velocity: ${k.sales_velocity_days || 0} days\n  - Daily inbound leads: ${k.daily_inbound_leads || 0} (7-day avg: ${k.leads_7day_avg || 0})\n  - Lead volume MoM: ${k.lead_volume_mom_pct || 0}%\n  - New customer revenue MTD: $${Math.round(k.new_customer_revenue || 0).toLocaleString()} (${k.new_customer_deals || 0} deals)\n  - Existing customer revenue MTD: $${Math.round(k.existing_customer_revenue || 0).toLocaleString()} (${k.existing_customer_deals || 0} deals)\n  - Strips per device: ${k.strips_per_device || 0}\n  - Devices sold YTD: ${k.total_devices_sold_ytd || 0}\n  - Strip packs sold YTD: ${k.total_strips_sold_ytd || 0}\n\n  VERTICALS (QTD revenue / goal):\n  ${vertLines}\n\n  PROJECTION (weighted monthly run rate; current month prorated to full-month equivalent):\n  - Pessimistic EOY: $${Math.round(pessimistic).toLocaleString()}\n  - Base EOY: $${Math.round(base).toLocaleString()}\n  - Optimistic EOY: $${Math.round(optimistic).toLocaleString()}\n\n  Return JSON with this exact structure:\n  {\n    \"summary\": \"2-3 sentence overview of business state\",\n    \"projection\": \"1-2 sentences on EOY trajectory with confidence range\",\n    \"actions\": [\n      {\"signal\": \"what the data shows\", \"action\": \"specific next step to take\", \"urgency\": \"high|medium|low\"}\n    ]\n  }\n\n  Rules:\n  - Write as a chief of staff briefing the CEO at 6 AM\n  - Be direct and specific. No filler.\n  - Actions must be concrete (\"Schedule X with Y this week\") not vague (\"Consider improving Z\")\n  - 3-5 actions max, ordered by urgency\n  - Use the actual numbers provided. Do not fabricate any figures.\n  - Return ONLY valid JSON, no markdown wrapping\n\n  DATA QUALITY NOTES (factor these in):\n  - Revenue, deals, verticals, and regions come from QuickBooks invoices (authoritative). HubSpot is NOT used for financials.\n  - \"Unassigned\" vertical = QBO customers not yet mapped in customer_rep_map. Today that is $${Math.round((verts.find(v => v.vertical_name === 'Unassigned') || {}).revenue_qtd || 0).toLocaleString()} QTD. Treat\n   as a classification gap (action: reclassify customers), NOT a revenue problem.\n  - Vertical goal progress shows 0% when goals are unset in the goals table. Skip goal commentary until goals are set for the current quarter.\n  - Strips per device is a YTD ratio (strips sold / devices sold this year). Does not reflect lifetime reorder behavior from prior-year device owners.\n  - Lead volume MoM requires 30+ days of snapshot history. 0% early in deployment means insufficient data, not flat leads.\n  - Daily inbound leads currently 0 — the HubSpot lead metric is not yet wired to produce real counts.\n  - Do NOT flag data quality issues as business emergencies. If a metric is likely zero due to missing CRM data or unset goals, note it as a \"data gap to fix\" not a \"revenue crisis.\"`\n      }]\n    });\n  })() }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "ee46b9d9-b5ad-4cf3-b1f0-1f4643938f1d",
+      "name": "OpenRouter — Generate Briefing",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2432,
+        640
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "5mUj2ZiWteREtW1d",
+          "name": "OpenRouter API"
+        },
+        "httpMultipleHeadersAuth": {
+          "id": "gfe2P1mxUaC60YUi",
+          "name": "Multiple Headers Auth account"
+        }
+      },
+      "notes": "Sends pre-computed KPIs via OpenRouter to Claude. Claude narrates the data — it does not compute or forecast. No hallucination risk. Set OPENROUTER_API_KEY in n8n variables. Can swap model by changing the model string (e.g. anthropic/claude-haiku-4-5-20251001 for cheaper runs)."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO daily_briefings (briefing_date, summary, projection, actions, model_used, input_hash)\n  VALUES ($1, $2, $3, $4::jsonb, $5, $6)\n  ON CONFLICT (briefing_date) DO UPDATE SET\n    summary = EXCLUDED.summary,\n    projection = EXCLUDED.projection,\n    actions = EXCLUDED.actions,\n    model_used = EXCLUDED.model_used,\n    created_at = NOW()",
+        "options": {
+          "queryReplacement": "={{ [$json.briefing_date, $json.summary, $json.projection, $json.actions, $json.model_used, $json.input_hash] }}"
+        }
+      },
+      "id": "7b3d56be-1d7d-4bea-b3b7-8cf4c8822c54",
+      "name": "Postgres — Write Daily Briefing",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2912,
+        576
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "eDrwSNwS2VQepOIH",
+          "name": "Postgres account"
+        }
+      },
+      "notes": "Saves Claude's briefing to Postgres. ON CONFLICT handles re-runs on the same day."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Read today's snapshot + last 6 months for projection + vertical goals\nWITH snapshot AS (\n  SELECT * FROM daily_snapshots WHERE snapshot_date = CURRENT_DATE\n),\nmonthly AS (\n  SELECT\n    date_trunc('month', snapshot_date) as month,\n    MAX(revenue_mtd) as revenue\n  FROM daily_snapshots\n  WHERE snapshot_date >= CURRENT_DATE - INTERVAL '6 months'\n  GROUP BY 1\n  ORDER BY 1\n),\nvert AS (\n  SELECT vs.*, v.name as vertical_name, g.q1_target as goal_qtd\n  FROM vertical_snapshots vs\n  JOIN verticals v ON v.id = vs.vertical_id\n  LEFT JOIN goals g ON g.vertical_id = v.id AND g.year = EXTRACT(YEAR FROM CURRENT_DATE)\n  WHERE vs.snapshot_date = CURRENT_DATE\n),\ncompany AS (\n  SELECT * FROM company_goals WHERE year = EXTRACT(YEAR FROM CURRENT_DATE) LIMIT 1\n)\nSELECT json_build_object(\n  'kpis', row_to_json(s),\n  'monthly_revenue', (SELECT json_agg(row_to_json(m)) FROM monthly m),\n  'verticals', (SELECT json_agg(row_to_json(vt)) FROM vert vt),\n  'annual_target', (SELECT annual_target FROM company)\n) as briefing_data\nFROM snapshot s;",
+        "options": {}
+      },
+      "id": "2b51d1e4-07bf-47fa-89f9-c8743c089ab1",
+      "name": "Prepare Briefing Data",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2096,
+        704
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "postgres": {
+          "id": "eDrwSNwS2VQepOIH",
+          "name": "Postgres account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "notes": "Reads today's fresh snapshot from Postgres (with MoM values) + last 6 months for projection calculation. This feeds the Claude briefing prompt with verified data."
+    },
+    {
+      "parameters": {
+        "jsCode": "const resp = $input.first().json;\n  const raw = resp.body?.choices?.[0]?.message?.content || '';\n\n  if (!raw) {\n    throw new Error('OpenRouter returned empty content');\n  }\n\n  const cleaned = raw.replace(/^```(?:json)?\\s*/, '').replace(/\\s*```$/, '').trim();\n\n  let parsed = { summary: '', projection: '', actions: [] };\n  try {\n    parsed = JSON.parse(cleaned);\n  } catch (e) {\n    parsed.summary = cleaned;\n  }\n\n  // Simple djb2 hash — good enough for duplicate detection\n  let h = 5381;\n  for (let i = 0; i < cleaned.length; i++) {\n    h = ((h << 5) + h + cleaned.charCodeAt(i)) | 0;\n  }\n  const inputHash = (h >>> 0).toString(16).padStart(8, '0');\n\n  return [{\n    json: {\n      briefing_date: new Date().toISOString().split('T')[0],\n      summary: parsed.summary || '',\n      projection: parsed.projection || '',\n      actions: JSON.stringify(parsed.actions || []),\n      model_used: resp.body?.model || 'anthropic/claude-sonnet-4-6',\n      input_hash: inputHash,\n      openrouter_id: resp.body?.id || '',\n    }\n  }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2672,
+        592
+      ],
+      "id": "6aee1c0f-03a9-49db-bc97-1ec30965f7b1",
+      "name": "Parse Briefing Response"
+    },
+    {
+      "parameters": {
+        "url": "={{$vars.QUICKBOOKS_API_BASE || 'https://quickbooks.api.intuit.com'}}/v3/company/193514766337794/query?query=SELECT * FROM Invoice WHERE MetaData.LastUpdatedTime >= '{{ new Date(Date.now() - 2*24*60*60*1000).toISOString().split('T')[0] }}' STARTPOSITION 1 MAXRESULTS 100&minorversion=65",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "quickBooksOAuth2Api",
+        "options": {}
+      },
+      "id": "ff763c1c-2b06-4eb2-a245-53930741f702",
+      "name": "QuickBooks — Fetch Recent Invoices",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        64,
+        448
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "quickBooksOAuth2Api": {
+          "id": "lhymeLb2sIkypk6I",
+          "name": "QuickBooks Online account"
+        }
+      },
+      "notes": "Fetches all invoices for the current year. QuickBooks is the financial source of truth for revenue."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process QBO invoices and prepare for Postgres upsert\nconst input = $input.first().json;\nconst invoices = input.QueryResponse?.Invoice || [];\n\nif (invoices.length === 0) {\n    return [{ json: { upsert_sql: 'SELECT 1 AS no_op;', upserted: 0 } }];\n  }\n\nconst STATE_TO_REGION = {\n    'Northeast': ['CT','MA','ME','NH','NJ','NY','PA','RI','VT'],\n    'South':['AL','AR','DC','DE','FL','GA','KY','LA','MD','MS','NC','OK','SC','TN','TX','VA','WV'],\n    'Midwest':   ['IA','IL','IN','KS','MI','MN','MO','ND','NE','OH','SD','WI'],\n    'West':      ['AK','AZ','CA','CO','HI','ID','MT','NM','NV','OR','UT','WA','WY']\n  };\n\nfunction stateToRegion(state) {\n  if (!state) return 'Unknown';\n  for (const [region, states] of Object.entries(STATE_TO_REGION)) {\n    if (states.includes(state)) return region;\n  }\n  return 'Unknown';\n}\n\nfunction extractState(shipAddr) {\n  if (!shipAddr) return null;\n  for (const key of ['Line5','Line4','Line3','Line2','Line1']) {\n    const line = shipAddr[key] || '';\n    const m = line.match(/\\b([A-Z]{2})\\s+\\d{5}/);\n    if (m) return m[1];\n  }\n  return null;\n}\n\nconst upsertValues = invoices.map(inv => {\n  const lines = (inv.Line || []).filter(l =>\n    l.DetailType === 'SalesItemLineDetail' &&\n    l.SalesItemLineDetail?.ItemRef?.value !== '55'\n  );\n\n  let device_rev = 0, strip_rev = 0, sweat_rev = 0, acc_rev = 0;\n  let device_qty = 0, strip_qty = 0, sweat_qty = 0, acc_qty = 0;\n\n  for (const line of lines) {\n    const amt = parseFloat(line.Amount || 0);\n    const qty = parseInt(line.SalesItemLineDetail?.Qty || 0);\n    const acct = line.SalesItemLineDetail?.ItemAccountRef?.name || '';\n\n    if (acct.includes('41000')) { device_rev += amt; device_qty += qty; }\n    else if (acct.includes('44000')) { strip_rev += amt; strip_qty += qty; }\n    else if (acct.includes('43000')) { sweat_rev += amt; sweat_qty += qty; }\n    else if (acct.includes('45000')) { acc_rev += amt; acc_qty += qty; }\n  }\n\n  const product_revenue = device_rev + strip_rev + sweat_rev + acc_rev;\n  const ship_state = extractState(inv.ShipAddr);\n  const ship_region = stateToRegion(ship_state);\n\n  return {\n    qbo_invoice_id: inv.Id,\n    doc_number: inv.DocNumber || '',\n    txn_date: inv.TxnDate,\n    customer_id: inv.CustomerRef?.value || '',\n    customer_name: (inv.CustomerRef?.name || '').replace(/'/g, \"''\"),\n    total_amt: inv.TotalAmt || 0,\n    product_revenue,\n    device_revenue: device_rev,\n    strip_revenue: strip_rev,\n    sweat_revenue: sweat_rev,\n    accessory_revenue: acc_rev,\n    device_qty, strip_qty, sweat_qty, accessory_qty: acc_qty,\n    ship_state, ship_region,\n    balance: inv.Balance || 0,\n    invoice_status: inv.EInvoiceStatus || 'Unknown',\n    raw_json: JSON.stringify(inv).replace(/'/g, \"''\"),\n    last_updated_qbo: inv.MetaData?.LastUpdatedTime || ''\n  };\n});\n\n// Build single SQL with multiple UPSERT statements\nconst sql = upsertValues.map(v => `\n  INSERT INTO qbo_invoices (qbo_invoice_id, doc_number, txn_date, customer_id, customer_name,\n    total_amt, product_revenue, device_revenue, strip_revenue, sweat_revenue, accessory_revenue,\n    device_qty, strip_qty, sweat_qty, accessory_qty, ship_state, ship_region, balance, invoice_status,\n    raw_json, last_updated_qbo, synced_at)\n  VALUES ('${v.qbo_invoice_id}', '${v.doc_number}', '${v.txn_date}', '${v.customer_id}', '${v.customer_name}',\n    ${v.total_amt}, ${v.product_revenue}, ${v.device_revenue}, ${v.strip_revenue},\n    ${v.sweat_revenue}, ${v.accessory_revenue},\n    ${v.device_qty}, ${v.strip_qty}, ${v.sweat_qty}, ${v.accessory_qty},\n    ${v.ship_state ? `'${v.ship_state}'` : 'NULL'}, '${v.ship_region}',\n    ${v.balance}, '${v.invoice_status}',\n    '${v.raw_json}'::jsonb, '${v.last_updated_qbo}', NOW())\n  ON CONFLICT (qbo_invoice_id) DO UPDATE SET\n    total_amt = EXCLUDED.total_amt, product_revenue = EXCLUDED.product_revenue,\n    device_revenue = EXCLUDED.device_revenue, strip_revenue = EXCLUDED.strip_revenue,\n    sweat_revenue = EXCLUDED.sweat_revenue, accessory_revenue = EXCLUDED.accessory_revenue,\n    device_qty = EXCLUDED.device_qty, strip_qty = EXCLUDED.strip_qty,\n    sweat_qty = EXCLUDED.sweat_qty, accessory_qty = EXCLUDED.accessory_qty,\n    balance = EXCLUDED.balance, invoice_status = EXCLUDED.invoice_status,\n    raw_json = EXCLUDED.raw_json, last_updated_qbo = EXCLUDED.last_updated_qbo,\n    synced_at = NOW();\n`).join('\\n');\n\nreturn [{ json: { upsert_sql: sql, upserted: upsertValues.length } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        256,
+        512
+      ],
+      "id": "4a124f84-2a5c-4fdf-8c6c-4892d4765a65",
+      "name": "Process & Upsert Invoices"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "{{ $json.upsert_sql }}",
+        "options": {
+          "queryReplacement": "="
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        448,
+        640
+      ],
+      "id": "6645794e-09e0-4929-9557-f7d56c659959",
+      "name": "Upsert Invoices",
+      "credentials": {
+        "postgres": {
+          "id": "eDrwSNwS2VQepOIH",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  CURRENT_DATE AS snapshot_date,\n  COALESCE(SUM(CASE WHEN txn_date >= date_trunc('week', CURRENT_DATE) THEN product_revenue END), 0) AS revenue_wtd,\n  COALESCE(SUM(CASE WHEN txn_date >= date_trunc('month', CURRENT_DATE) THEN product_revenue END), 0) AS revenue_mtd,\n  COALESCE(SUM(CASE WHEN txn_date >= date_trunc('quarter', CURRENT_DATE) THEN product_revenue END), 0) AS revenue_qtd,\n  COALESCE(SUM(CASE WHEN txn_date >= date_trunc('year', CURRENT_DATE) THEN product_revenue END), 0) AS revenue_ytd,\n  COUNT(CASE WHEN txn_date >= date_trunc('week', CURRENT_DATE) THEN 1 END) AS deals_closed_wtd,\n  COUNT(CASE WHEN txn_date >= date_trunc('month', CURRENT_DATE) THEN 1 END) AS deals_closed_mtd,\n  COUNT(CASE WHEN txn_date >= date_trunc('quarter', CURRENT_DATE) THEN 1 END) AS deals_closed_qtd,\n  COUNT(CASE WHEN txn_date >= date_trunc('year', CURRENT_DATE) THEN 1 END) AS deals_closed_ytd,\n  ROUND(COALESCE(SUM(CASE WHEN txn_date >= date_trunc('year', CURRENT_DATE) THEN product_revenue END) /\n    NULLIF(COUNT(CASE WHEN txn_date >= date_trunc('year', CURRENT_DATE) THEN 1 END), 0), 0), 2) AS avg_order_size,\n  COALESCE(SUM(CASE WHEN txn_date >= date_trunc('year', CURRENT_DATE) THEN device_qty END), 0) AS total_devices_sold_ytd,\n  COALESCE(SUM(CASE WHEN txn_date >= date_trunc('year', CURRENT_DATE) THEN strip_qty END), 0) AS total_strips_sold_ytd,\n  ROUND(COALESCE(\n    SUM(CASE WHEN txn_date >= date_trunc('year', CURRENT_DATE) THEN strip_qty END)::numeric /\n    NULLIF(SUM(CASE WHEN txn_date >= date_trunc('year', CURRENT_DATE) THEN device_qty END), 0), 0), 2) AS strips_per_device,\n  COUNT(CASE WHEN txn_date >= date_trunc('month', CURRENT_DATE)\n    AND crm.first_invoice_date >= date_trunc('year', CURRENT_DATE) THEN 1 END) AS new_customer_deals,\n  COALESCE(SUM(CASE WHEN txn_date >= date_trunc('month', CURRENT_DATE)\n    AND crm.first_invoice_date >= date_trunc('year', CURRENT_DATE) THEN product_revenue END), 0) AS new_customer_revenue,\n  COUNT(CASE WHEN txn_date >= date_trunc('month', CURRENT_DATE)\n    AND (crm.first_invoice_date < date_trunc('year', CURRENT_DATE) OR crm.first_invoice_date IS NULL) THEN 1 END) AS existing_customer_deals,\n  COALESCE(SUM(CASE WHEN txn_date >= date_trunc('month', CURRENT_DATE)\n    AND (crm.first_invoice_date < date_trunc('year', CURRENT_DATE) OR crm.first_invoice_date IS NULL) THEN product_revenue END), 0) AS existing_customer_revenue\nFROM qbo_invoices qi\nLEFT JOIN customer_rep_map crm ON qi.customer_id = crm.qbo_customer_id\nWHERE qi.txn_date >= date_trunc('year', CURRENT_DATE)\nAND COALESCE(crm.vertical, 'Unassigned') != 'Exclude';",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1136,
+        976
+      ],
+      "id": "041e0285-1885-441d-a4de-263ecf4300a4",
+      "name": "Postgres — Daily KPIs",
+      "credentials": {
+        "postgres": {
+          "id": "eDrwSNwS2VQepOIH",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  CURRENT_DATE AS snapshot_date,\n  COALESCE(crm.vertical, 'Unassigned') AS vertical_name,\n  COALESCE(SUM(CASE WHEN txn_date >= date_trunc('week', CURRENT_DATE) THEN product_revenue END), 0) AS revenue_wtd,\n  COALESCE(SUM(CASE WHEN txn_date >= date_trunc('month', CURRENT_DATE) THEN product_revenue END), 0) AS revenue_mtd,\n  COALESCE(SUM(CASE WHEN txn_date >= date_trunc('quarter', CURRENT_DATE) THEN product_revenue END), 0) AS revenue_qtd,\n  COALESCE(SUM(CASE WHEN txn_date >= date_trunc('year', CURRENT_DATE) THEN product_revenue END), 0) AS revenue_ytd,\n  COUNT(CASE WHEN txn_date >= date_trunc('week', CURRENT_DATE) THEN 1 END) AS deals_closed_wtd,\n  COUNT(CASE WHEN txn_date >= date_trunc('month', CURRENT_DATE) THEN 1 END) AS deals_closed_mtd,\n  COUNT(CASE WHEN txn_date >= date_trunc('quarter', CURRENT_DATE) THEN 1 END) AS deals_closed_qtd\nFROM qbo_invoices qi\nLEFT JOIN customer_rep_map crm ON qi.customer_id = crm.qbo_customer_id\nWHERE qi.txn_date >= date_trunc('year', CURRENT_DATE)\nAND COALESCE(crm.vertical, 'Unassigned') != 'Exclude'\nGROUP BY COALESCE(crm.vertical, 'Unassigned');",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1136,
+        608
+      ],
+      "id": "9a510705-8210-4afe-8687-5f0ff1438dab",
+      "name": "Postgres — Vertical KPIs",
+      "credentials": {
+        "postgres": {
+          "id": "eDrwSNwS2VQepOIH",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  CURRENT_DATE AS snapshot_date,\n  COALESCE(ship_region, 'Unknown') AS region_name,\n  COALESCE(SUM(CASE WHEN txn_date >= date_trunc('week', CURRENT_DATE) THEN product_revenue END), 0) AS revenue_wtd,\n  COALESCE(SUM(CASE WHEN txn_date >= date_trunc('month', CURRENT_DATE) THEN product_revenue END), 0) AS revenue_mtd,\n  COALESCE(SUM(CASE WHEN txn_date >= date_trunc('quarter', CURRENT_DATE) THEN product_revenue END), 0) AS revenue_qtd,\n  COALESCE(SUM(CASE WHEN txn_date >= date_trunc('year', CURRENT_DATE) THEN product_revenue END), 0) AS revenue_ytd,\n  COUNT(CASE WHEN txn_date >= date_trunc('quarter', CURRENT_DATE) THEN 1 END) AS deals_closed_qtd\nFROM qbo_invoices qi\nLEFT JOIN customer_rep_map crm ON qi.customer_id = crm.qbo_customer_id\nWHERE qi.txn_date >= date_trunc('year', CURRENT_DATE)\nAND COALESCE(crm.vertical, 'Unassigned') != 'Exclude'\nGROUP BY COALESCE(ship_region, 'Unknown');",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1136,
+        800
+      ],
+      "id": "70eaee74-8f2c-4e62-9ea7-2afa6721fb76",
+      "name": "Postgres — Region KPIs",
+      "credentials": {
+        "postgres": {
+          "id": "eDrwSNwS2VQepOIH",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO vertical_snapshots (\n    snapshot_date, vertical_id,\n    revenue_wtd, revenue_mtd, revenue_qtd, revenue_ytd,\n    deals_closed_wtd, deals_closed_mtd, deals_closed_qtd,\n    new_customer_deals, existing_customer_deals, strips_per_device\n  )\n  SELECT CURRENT_DATE, id,\n    $2, $3, $4, $5,\n    $6, $7, $8,\n    0, 0, 0\n  FROM verticals WHERE name = $1\n  ON CONFLICT (snapshot_date, vertical_id) DO UPDATE SET\n    revenue_wtd = EXCLUDED.revenue_wtd,\n    revenue_mtd = EXCLUDED.revenue_mtd,\n    revenue_qtd = EXCLUDED.revenue_qtd,\n    revenue_ytd = EXCLUDED.revenue_ytd,\n    deals_closed_wtd = EXCLUDED.deals_closed_wtd,\n    deals_closed_mtd = EXCLUDED.deals_closed_mtd,\n    deals_closed_qtd = EXCLUDED.deals_closed_qtd;",
+        "options": {
+          "queryReplacement": "={{ $json.vertical_name }}, {{ $json.revenue_wtd }}, {{ $json.revenue_mtd }}, {{ $json.revenue_qtd }}, {{ $json.revenue_ytd }}, {{ $json.deals_closed_wtd }}, {{ $json.deals_closed_mtd }}, {{\n  $json.deals_closed_qtd }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1344,
+        608
+      ],
+      "id": "718b970b-699e-4a26-bc02-cf4a6fbb87a8",
+      "name": "Write Vertical Snapshots",
+      "credentials": {
+        "postgres": {
+          "id": "eDrwSNwS2VQepOIH",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": " INSERT INTO region_snapshots (\n    snapshot_date, region_id,\n    revenue_wtd, revenue_mtd, revenue_qtd, revenue_ytd,\n    deals_closed_qtd\n  )\n  SELECT CURRENT_DATE, id,\n    $2, $3, $4, $5,\n    $6\n  FROM regions WHERE name = $1\n  ON CONFLICT (snapshot_date, region_id) DO UPDATE SET\n    revenue_wtd = EXCLUDED.revenue_wtd,\n    revenue_mtd = EXCLUDED.revenue_mtd,\n    revenue_qtd = EXCLUDED.revenue_qtd,\n    revenue_ytd = EXCLUDED.revenue_ytd,\n    deals_closed_qtd = EXCLUDED.deals_closed_qtd;",
+        "options": {
+          "queryReplacement": "={{ $json.region_name }}, {{ $json.revenue_wtd }}, {{ $json.revenue_mtd }}, {{ $json.revenue_qtd }}, {{ $json.revenue_ytd }}, {{ $json.deals_closed_qtd }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1344,
+        800
+      ],
+      "id": "943912ad-d714-494b-a36c-19a4afcc2ddf",
+      "name": "Write Region Snapshots",
+      "credentials": {
+        "postgres": {
+          "id": "eDrwSNwS2VQepOIH",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const results = $input.first().json.results || [];\n\n  const yesterday = new Date();\n  yesterday.setDate(yesterday.getDate() - 1);\n  const yesterdayStr = yesterday.toISOString().split('T')[0];\n\n  const sevenDaysAgo = new Date();\n  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);\n\n  const daily_inbound_leads = results.filter(l => {\n    const d = l.properties?.hs_createdate;\n    return d && d.startsWith(yesterdayStr);\n  }).length;\n\n  const leads_7day = results.filter(l => {\n    const d = l.properties?.hs_createdate;\n    if (!d) return false;\n    return new Date(d) >= sevenDaysAgo;\n  }).length;\n\n  return [{\n    json: {\n      daily_inbound_leads,\n      leads_7day_avg: Math.round((leads_7day / 7) * 10) / 10\n    }\n  }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        256,
+        800
+      ],
+      "id": "6565577f-0ffe-42a3-aa5e-40f103577380",
+      "name": "Compute Lead Metrics"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO daily_snapshots (\n    snapshot_date, revenue_wtd, revenue_mtd, revenue_qtd, revenue_ytd,\n    deals_closed_wtd, deals_closed_mtd, deals_closed_qtd, deals_closed_ytd,\n    avg_order_size, sales_velocity_days,\n    daily_inbound_leads, leads_7day_avg,\n    new_customer_deals, new_customer_revenue,\n    existing_customer_deals, existing_customer_revenue,\n    total_devices_sold_ytd, total_strips_sold_ytd, strips_per_device,\n    revenue_mom_pct, lead_volume_mom_pct, new_customers_mom_pct,\n    snapshot_ts\n  ) VALUES (\n    CURRENT_DATE,\n    {{ $json.revenue_wtd }},\n    {{ $json.revenue_mtd }},\n    {{ $json.revenue_qtd }},\n    {{ $json.revenue_ytd }},\n    {{ $json.deals_closed_wtd }},\n    {{ $json.deals_closed_mtd }},\n    {{ $json.deals_closed_qtd }},\n    {{ $json.deals_closed_ytd }},\n    {{ $json.avg_order_size }},\n    0,\n    {{ $('Compute Lead Metrics').first().json.daily_inbound_leads }},\n    {{ $('Compute Lead Metrics').first().json.leads_7day_avg }},\n    {{ $json.new_customer_deals }},\n    {{ $json.new_customer_revenue }},\n    {{ $json.existing_customer_deals }},\n    {{ $json.existing_customer_revenue }},\n    {{ $json.total_devices_sold_ytd }},\n    {{ $json.total_strips_sold_ytd }},\n    {{ $json.strips_per_device }},\n    0, 0, 0,\n    NOW()\n  )\n  ON CONFLICT (snapshot_date) DO UPDATE SET\n    revenue_wtd = EXCLUDED.revenue_wtd,\n    revenue_mtd = EXCLUDED.revenue_mtd,\n    revenue_qtd = EXCLUDED.revenue_qtd,\n    revenue_ytd = EXCLUDED.revenue_ytd,\n    deals_closed_wtd = EXCLUDED.deals_closed_wtd,\n    deals_closed_mtd = EXCLUDED.deals_closed_mtd,\n    deals_closed_qtd = EXCLUDED.deals_closed_qtd,\n    deals_closed_ytd = EXCLUDED.deals_closed_ytd,\n    avg_order_size = EXCLUDED.avg_order_size,\n    daily_inbound_leads = EXCLUDED.daily_inbound_leads,\n    leads_7day_avg = EXCLUDED.leads_7day_avg,\n    new_customer_deals = EXCLUDED.new_customer_deals,\n    new_customer_revenue = EXCLUDED.new_customer_revenue,\n    existing_customer_deals = EXCLUDED.existing_customer_deals,\n    existing_customer_revenue = EXCLUDED.existing_customer_revenue,\n    total_devices_sold_ytd = EXCLUDED.total_devices_sold_ytd,\n    total_strips_sold_ytd = EXCLUDED.total_strips_sold_ytd,\n    strips_per_device = EXCLUDED.strips_per_device,\n    snapshot_ts = NOW();",
+        "options": {
+          "queryReplacement": "="
+        }
+      },
+      "id": "01f95e4f-6a60-4a09-8612-595bec2c7f25",
+      "name": "Postgres — Write Daily Snapshot",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1472,
+        1040
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "eDrwSNwS2VQepOIH",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "chooseBranch"
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1296,
+        1200
+      ],
+      "id": "5ab4feea-fd3a-475b-9bcf-217db0af3cac",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO customer_rep_map (qbo_customer_id, qbo_customer_name, rep_id, vertical)\n  SELECT DISTINCT ON (qi.customer_id) qi.customer_id, qi.customer_name, 'unassigned', 'Unassigned'\n  FROM qbo_invoices qi\n  LEFT JOIN customer_rep_map crm ON qi.customer_id = crm.qbo_customer_id\n  WHERE crm.qbo_customer_id IS NULL\n  ON CONFLICT (qbo_customer_id) DO NOTHING;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        688,
+        688
+      ],
+      "id": "e5d348ec-9891-4fda-9973-59635ed3b623",
+      "name": "Sync Customer Map",
+      "credentials": {
+        "postgres": {
+          "id": "eDrwSNwS2VQepOIH",
+          "name": "Postgres account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Daily 6AM Trigger": {
+      "main": [
+        [
+          {
+            "node": "QuickBooks — Fetch Recent Invoices",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "HubSpot — Fetch Inbound Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "HubSpot — Fetch Inbound Leads",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "QuickBooks — Fetch Recent Invoices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HubSpot — Fetch Inbound Leads": {
+      "main": [
+        [
+          {
+            "node": "Compute Lead Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tag: Leads": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Postgres — Compute MoM Growth": {
+      "main": [
+        [
+          {
+            "node": "Prepare Briefing Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Briefing Data": {
+      "main": [
+        [
+          {
+            "node": "OpenRouter — Generate Briefing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter — Generate Briefing": {
+      "main": [
+        [
+          {
+            "node": "Parse Briefing Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres — Write Daily Briefing": {
+      "main": [
+        [
+          {
+            "node": "Slack — Success Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Briefing Response": {
+      "main": [
+        [
+          {
+            "node": "Postgres — Write Daily Briefing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "QuickBooks — Fetch Recent Invoices": {
+      "main": [
+        [
+          {
+            "node": "Process & Upsert Invoices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process & Upsert Invoices": {
+      "main": [
+        [
+          {
+            "node": "Upsert Invoices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Invoices": {
+      "main": [
+        [
+          {
+            "node": "Sync Customer Map",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres — Vertical KPIs": {
+      "main": [
+        [
+          {
+            "node": "Write Vertical Snapshots",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres — Region KPIs": {
+      "main": [
+        [
+          {
+            "node": "Write Region Snapshots",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres — Daily KPIs": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute Lead Metrics": {
+      "main": [
+        [
+          {
+            "node": "Tag: Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Postgres — Write Daily Snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Vertical Snapshots": {
+      "main": [
+        [
+          {
+            "node": "Postgres — Compute MoM Growth",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Region Snapshots": {
+      "main": [
+        [
+          {
+            "node": "Postgres — Compute MoM Growth",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres — Write Daily Snapshot": {
+      "main": [
+        [
+          {
+            "node": "Postgres — Compute MoM Growth",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sync Customer Map": {
+      "main": [
+        [
+          {
+            "node": "Postgres — Daily KPIs",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Postgres — Vertical KPIs",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Postgres — Region KPIs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "timezone": "America/Chicago",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": true
+  },
+  "versionId": "61e91a23-dfc2-40bb-8423-9dc216392aa7",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "f0e0e919af7e12b5c590758565abe4df1903ec450015942da2f2bfe2f953540d"
+  },
+  "id": "CfWczdj6w1jPdc1u",
+  "tags": [
+    {
+      "updatedAt": "2026-03-24T21:10:40.088Z",
+      "createdAt": "2026-03-24T21:10:40.088Z",
+      "id": "qwR7oqwthKIslZVn",
+      "name": "dashboard"
+    },
+    {
+      "updatedAt": "2026-03-24T21:10:39.986Z",
+      "createdAt": "2026-03-24T21:10:39.986Z",
+      "id": "Z6o2Ih3pA4cLfk32",
+      "name": "mx3"
+    },
+    {
+      "updatedAt": "2026-03-24T21:10:40.005Z",
+      "createdAt": "2026-03-24T21:10:40.005Z",
+      "id": "EyhCjTtjJBuCElq0",
+      "name": "production"
+    }
+  ]
+}
