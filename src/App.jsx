@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef } from "react";
 
 // ─── DESIGN SYSTEM ──────────────────────────────────────────────
 // Investor-grade dark theme inspired by Stripe/Linear/Vercel
@@ -112,7 +112,6 @@ const fmt = (n) => {
   return `$${v.toFixed(0)}`;
 };
 
-const fmtNum = (n) => n.toLocaleString();
 
 // ─── ANIMATED NUMBER ────────────────────────────────────────────
 
@@ -695,7 +694,7 @@ export default function MX3Dashboard() {
               <div style={{ display: "flex", alignItems: "center", gap: 24 }}>
                 <div>
                   <span style={{ fontSize: 32, fontWeight: 700 }}>{s.daily_inbound_leads}</span>
-                  <span style={{ fontSize: 13, color: T.textMute, marginLeft: 8 }}>today</span>
+                  <span style={{ fontSize: 13, color: T.textMute, marginLeft: 8 }}>yesterday</span>
                 </div>
                 <div style={{ fontSize: 12, color: T.textSec }}>
                   7-day avg: <strong style={{ color: T.text }}>{s.leads_7day_avg}</strong>
